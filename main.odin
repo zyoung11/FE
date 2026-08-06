@@ -784,7 +784,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 		os.exit(1)
 	}
 	defer chan.destroy(results)
-	n_workers := 2
+	n_workers := 3
 	workers := make([]^Render_Worker, n_workers)
 	defer {
 		for w in workers {
