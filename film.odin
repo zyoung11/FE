@@ -1,6 +1,9 @@
 package main
 
 import "core:math"
+import "core:os"
+import "core:strconv"
+import "core:thread"
 
 EPS :: 1e-5
 
@@ -14,6 +17,63 @@ Film_Params :: struct {
     max_r:      f32,
     ag:         f32,
     lambda_fac: f32,
+}
+
+Gauss_Band :: struct {
+    src:    []f32,
+    dst:    []f32,
+    kernel: []f32,
+    w:      int,
+    h:      int,
+    r:      int,
+    x0:     int,
+    x1:     int,
+    y0:     int,
+    y1:     int,
+}
+
+gauss_h_task :: proc(task: thread.Task) {
+    band := cast(^Gauss_Band)task.data
+    for y in band.y0 ..< band.y1 {
+        row := band.src[y * band.w:(y + 1) * band.w]
+        for x in 0 ..< band.w {
+            acc: f32
+            for j in 0 ..< len(band.kernel) {
+                sx := x + j - band.r
+                if sx >= 0 && sx < band.w {
+                    acc += row[sx] * band.kernel[j]
+                }
+            }
+            band.dst[y * band.w + x] = acc
+        }
+    }
+}
+
+gauss_v_task :: proc(task: thread.Task) {
+    band := cast(^Gauss_Band)task.data
+    for x in band.x0 ..< band.x1 {
+        for y in 0 ..< band.h {
+            acc: f32
+            for j in 0 ..< len(band.kernel) {
+                sy := y + j - band.r
+                if sy >= 0 && sy < band.h {
+                    acc += band.src[sy * band.w + x] * band.kernel[j]
+                }
+            }
+            band.dst[y * band.w + x] = acc
+        }
+    }
+}
+
+cpu_thread_count :: proc() -> int {
+    n := 8
+    if env, found := os.lookup_env_alloc("NUMBER_OF_PROCESSORS", context.allocator); found {
+        defer delete(env)
+        if v, ok := strconv.parse_int(env); ok {
+            n = max(1, v)
+        }
+    }
+    return n
 }
 
 prep_physics :: proc(r_px: f32, sig_px: f32, sig_f_px: f32) -> Film_Params {
@@ -132,6 +192,40 @@ adaptive_blur :: proc(src: []f32, w: int, h: int, sigma_min: f32, sigma_max: f32
     return out
 }
 
+gauss_pass :: proc(src: []f32, dst: []f32, kernel: []f32, w: int, h: int, r: int, vertical: bool) {
+    n_threads := cpu_thread_count()
+    pool: thread.Pool
+    thread.pool_init(&pool, context.allocator, n_threads)
+    defer thread.pool_destroy(&pool)
+    thread.pool_start(&pool)
+
+    blocks := n_threads * 4
+    bands := make([]Gauss_Band, blocks)
+    defer delete(bands)
+    if vertical {
+        band_w := (w + blocks - 1) / blocks
+        for b in 0 ..< blocks {
+            x0 := min(b * band_w, w)
+            x1 := min(x0 + band_w, w)
+            if x0 < x1 {
+                bands[b] = Gauss_Band{src = src, dst = dst, kernel = kernel, w = w, h = h, r = r, x0 = x0, x1 = x1}
+                thread.pool_add_task(&pool, context.allocator, gauss_v_task, &bands[b])
+            }
+        }
+    } else {
+        band_h := (h + blocks - 1) / blocks
+        for b in 0 ..< blocks {
+            y0 := min(b * band_h, h)
+            y1 := min(y0 + band_h, h)
+            if y0 < y1 {
+                bands[b] = Gauss_Band{src = src, dst = dst, kernel = kernel, w = w, h = h, r = r, y0 = y0, y1 = y1}
+                thread.pool_add_task(&pool, context.allocator, gauss_h_task, &bands[b])
+            }
+        }
+    }
+    thread.pool_finish(&pool)
+}
+
 gauss_blur :: proc(src: []f32, w: int, h: int, sigma: f32) -> []f32 {
     out := make([]f32, len(src))
     if sigma <= 0 {
@@ -154,30 +248,7 @@ gauss_blur :: proc(src: []f32, w: int, h: int, sigma: f32) -> []f32 {
 
     tmp := make([]f32, len(src))
     defer delete(tmp)
-    for y in 0 ..< h {
-        row := src[y * w:(y + 1) * w]
-        for x in 0 ..< w {
-            acc: f32
-            for j in 0 ..< 2 * r + 1 {
-                sx := x + j - r
-                if sx >= 0 && sx < w {
-                    acc += row[sx] * kernel[j]
-                }
-            }
-            tmp[y * w + x] = acc
-        }
-    }
-    for x in 0 ..< w {
-        for y in 0 ..< h {
-            acc: f32
-            for j in 0 ..< 2 * r + 1 {
-                sy := y + j - r
-                if sy >= 0 && sy < h {
-                    acc += tmp[sy * w + x] * kernel[j]
-                }
-            }
-            out[y * w + x] = acc
-        }
-    }
+    gauss_pass(src, tmp, kernel, w, h, r, false)
+    gauss_pass(tmp, out, kernel, w, h, r, true)
     return out
 }

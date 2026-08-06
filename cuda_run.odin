@@ -5,7 +5,8 @@ import "core:fmt"
 
 CUDA_LIB :: "nvcuda.dll" when ODIN_OS == .Windows else "libcuda.so.1"
 
-KERNEL_PTX :: #load("kernel.ptx")
+KERNEL_PTX_120 :: #load("kernel_120.ptx")
+KERNEL_PTX_BASE :: #load("kernel_61.ptx")
 
 CUresult :: i32
 CUdevice :: i32
@@ -18,6 +19,7 @@ cu_init: proc "c" (flags: u32) -> CUresult
 cu_device_get_count: proc "c" (count: ^i32) -> CUresult
 cu_device_get: proc "c" (device: ^CUdevice, ordinal: i32) -> CUresult
 cu_device_get_name: proc "c" (name: cstring, len: i32, dev: CUdevice) -> CUresult
+cu_device_compute_capability: proc "c" (major: ^i32, minor: ^i32, dev: CUdevice) -> CUresult
 cu_ctx_create: proc "c" (pctx: ^CUcontext, flags: u32, dev: CUdevice) -> CUresult
 cu_ctx_destroy: proc "c" (ctx: CUcontext) -> CUresult
 cu_module_load_data: proc "c" (module: ^CUmodule, image: rawptr) -> CUresult
@@ -79,6 +81,7 @@ cuda_load_symbols :: proc(lib: dynlib.Library) -> bool {
 	if !load_sym(lib, "cuDeviceGetCount", cast(^rawptr)&cu_device_get_count) {return false}
 	if !load_sym(lib, "cuDeviceGet", cast(^rawptr)&cu_device_get) {return false}
 	if !load_sym(lib, "cuDeviceGetName", cast(^rawptr)&cu_device_get_name) {return false}
+	if !load_sym(lib, "cuDeviceComputeCapability", cast(^rawptr)&cu_device_compute_capability) {return false}
 	if !load_sym(lib, "cuCtxCreate_v2", cast(^rawptr)&cu_ctx_create) {return false}
 	if !load_sym(lib, "cuCtxDestroy_v2", cast(^rawptr)&cu_ctx_destroy) {return false}
 	if !load_sym(lib, "cuModuleLoadData", cast(^rawptr)&cu_module_load_data) {return false}
@@ -139,13 +142,25 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	}
 	info(fmt.tprintf("GPU: %s", string(cstring(&name_buf[0]))))
 
+	major, minor: i32
+	if cu_device_compute_capability(&major, &minor, c.dev) != 0 {
+		warn("cuDeviceComputeCapability 失败，回退 CPU")
+		return false
+	}
+	info(fmt.tprintf("CUDA 架构: %d.%d", major, minor))
+	ptx_data := KERNEL_PTX_BASE
+	if major >= 12 {
+		ptx_data = KERNEL_PTX_120
+	}
 	if cu_ctx_create(&c.ctx, 0, c.dev) != 0 {
 		warn("cuCtxCreate 失败，回退 CPU")
 		return false
 	}
-	if cu_module_load_data(&c.module, raw_data(KERNEL_PTX)) != 0 {
-		warn("CUDA 模块加载失败，回退 CPU")
-		return false
+	if cu_module_load_data(&c.module, raw_data(ptx_data)) != 0 {
+		if cu_module_load_data(&c.module, raw_data(KERNEL_PTX_BASE)) != 0 {
+			warn("CUDA 模块加载失败，回退 CPU")
+			return false
+		}
 	}
 	if cu_module_get_function(&c.render_fn, c.module, "render_kernel") != 0 ||
 	   cu_module_get_function(&c.bounce_fn, c.module, "bounce_kernel") != 0 {

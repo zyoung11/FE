@@ -16,7 +16,8 @@ if [ ! -d "$MINGW_LIB" ]; then
 fi
 
 if command -v nvcc >/dev/null 2>&1; then
-    nvcc -ptx -arch=compute_80 -O3 -use_fast_math kernel.cu -o kernel.ptx
+    nvcc -ptx -arch=compute_61 -O3 -use_fast_math -Wno-deprecated-gpu-targets kernel.cu -o kernel_61.ptx
+    nvcc -ptx -arch=compute_120 -O3 -use_fast_math kernel.cu -o kernel_120.ptx
 fi
 
 rm -rf "$WINBUILD"
