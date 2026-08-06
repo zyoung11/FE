@@ -112,7 +112,7 @@ rnd_poisson :: proc(s: ^u32, lam: f32, exp_lam: f32) -> u32 {
 	x: u32 = 0
 	prod := exp_lam
 	summ := exp_lam
-	lim := u32(math.floor(1e4 * lam))
+	lim := u32(math.floor(lam + 6.0 * math.sqrt(lam))) + 1
 	for u > summ && x < lim {
 		x += 1
 		prod *= lam / f32(x)

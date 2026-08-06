@@ -44,7 +44,7 @@ __device__ unsigned rnd_poisson(unsigned* s, float lam, float exp_lam) {
 	float prod = exp_lam;
 	float summ = exp_lam;
 	unsigned x = 0u;
-	unsigned lim = (unsigned)floorf(1e4f * lam);
+	unsigned lim = (unsigned)floorf(lam + 6.0f * sqrtf(lam)) + 1u;
 	while (u > summ && x < lim) {
 		x += 1u;
 		prod *= lam / (float)x;
@@ -90,7 +90,7 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		int iy = (int)floorf(yG);
 		if (iy < 0) { iy = 0; }
 		if (iy > H - 1) { iy = H - 1; }
-		float u = src[iy * W + ix];
+		float u = __ldg(&src[iy * W + ix]);
 		if (u < 0.0f) { u = 0.0f; }
 		if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
 		float lam = -p.lambda_fac * logf(1.0f - u);
@@ -172,7 +172,7 @@ __global__ void bounce_kernel(
 			continue;
 		}
 		int base = (iy * W + ix) * 3;
-		float col[3] = {front[base], front[base + 1], front[base + 2]};
+		float col[3] = {__ldg(&front[base]), __ldg(&front[base + 1]), __ldg(&front[base + 2])};
 		for (unsigned l = 0u; l < p.n_layers; l++) {
 			float z_l = depth[l];
 			float x_l = x0 + dx * z_l / dz;
@@ -181,7 +181,7 @@ __global__ void bounce_kernel(
 			int iy_l = (int)floorf(y_l);
 			float dv = 1.0f;
 			if (ix_l >= 0 && ix_l < W && iy_l >= 0 && iy_l < H) {
-				dv = dens[(l * (unsigned)H + (unsigned)iy_l) * (unsigned)W + (unsigned)ix_l];
+				dv = __ldg(&dens[(l * (unsigned)H + (unsigned)iy_l) * (unsigned)W + (unsigned)ix_l]);
 			}
 			int ab = (int)l * 3;
 			col[0] *= 1.0f - absorb[ab] + absorb[ab] * dv;

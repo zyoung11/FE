@@ -7,8 +7,6 @@ CUDA_LIB :: "nvcuda.dll" when ODIN_OS == .Windows else "libcuda.so.1"
 
 KERNEL_PTX :: #load("kernel.ptx")
 
-CUDA_BAND :: 64
-
 CUresult :: i32
 CUdevice :: i32
 CUcontext :: rawptr
@@ -198,24 +196,21 @@ cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32
 		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
 		return false
 	}
-	for y0 := u32(0); y0 < params.height; y0 += CUDA_BAND {
-		p := params
-		p.y_offset = y0
-		bh := min(CUDA_BAND, params.height - y0)
-		grid_x := (params.width + 7) / 8
-		grid_y := (bh + 7) / 8
-		args := [3]rawptr{&c.d_src, &c.d_neg, &p}
-		if res := cu_launch_kernel(
-			c.render_fn,
-			grid_x, grid_y, 1,
-			8, 8, 1,
-			0, nil,
-			raw_data(args[:]), nil,
-		); res != 0 {
-			cu_ctx_synchronize()
-			fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
-			return false
-		}
+	p := params
+	p.y_offset = 0
+	grid_x := (params.width + 15) / 16
+	grid_y := (params.height + 15) / 16
+	args := [3]rawptr{&c.d_src, &c.d_neg, &p}
+	if res := cu_launch_kernel(
+		c.render_fn,
+		grid_x, grid_y, 1,
+		16, 16, 1,
+		0, nil,
+		raw_data(args[:]), nil,
+	); res != 0 {
+		cu_ctx_synchronize()
+		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
+		return false
 	}
 	if res := cu_ctx_synchronize(); res != 0 {
 		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
@@ -253,24 +248,21 @@ cuda_dispatch_bounce :: proc(
 		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
 		return false
 	}
-	for y0 := u32(0); y0 < params.height; y0 += CUDA_BAND {
-		p := params
-		p.y_offset = y0
-		bh := min(CUDA_BAND, params.height - y0)
-		grid_x := (params.width + 7) / 8
-		grid_y := (bh + 7) / 8
-		args := [6]rawptr{&c.d_front, &c.d_bounced, &c.d_dens, &c.d_absorb, &c.d_depth, &p}
-		if res := cu_launch_kernel(
-			c.bounce_fn,
-			grid_x, grid_y, 1,
-			8, 8, 1,
-			0, nil,
-			raw_data(args[:]), nil,
-		); res != 0 {
-			cu_ctx_synchronize()
-			fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
-			return false
-		}
+	p := params
+	p.y_offset = 0
+	grid_x := (params.width + 15) / 16
+	grid_y := (params.height + 15) / 16
+	args := [6]rawptr{&c.d_front, &c.d_bounced, &c.d_dens, &c.d_absorb, &c.d_depth, &p}
+	if res := cu_launch_kernel(
+		c.bounce_fn,
+		grid_x, grid_y, 1,
+		16, 16, 1,
+		0, nil,
+		raw_data(args[:]), nil,
+	); res != 0 {
+		cu_ctx_synchronize()
+		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
+		return false
 	}
 	if res := cu_ctx_synchronize(); res != 0 {
 		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))

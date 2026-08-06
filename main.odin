@@ -9,6 +9,7 @@ import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sys/windows"
+import "core:time"
 import stb "vendor:stb/image"
 
 BLUE :: "\x1b[38;2;138;173;244m"
@@ -21,6 +22,11 @@ info :: proc(msg: string) {fmt.printfln("%s[i]%s %s", BLUE, RESET, msg)}
 success :: proc(msg: string) {fmt.printfln("%s[+]%s %s", GREEN, RESET, msg)}
 warn :: proc(msg: string) {fmt.printfln("%s[!]%s %s", YELLOW, RESET, msg)}
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
+
+stage_time :: proc(label: string, t0: time.Time) -> time.Time {
+	info(fmt.tprintf("%s: %.2fs", label, time.duration_seconds(time.since(t0))))
+	return time.now()
+}
 
 Options :: struct {
 	input:          string `usage:"输入图像路径" args:"required"`,
@@ -50,6 +56,7 @@ main :: proc() {
 		windows.SetConsoleOutputCP(windows.CODEPAGE(65001))
 		windows.SetConsoleCP(windows.CODEPAGE(65001))
 	}
+	start := time.now()
 	opts: Options
 	opts.output = "out.png"
 	opts.mode = "color"
@@ -130,6 +137,7 @@ main :: proc() {
 	input_cstr := strings.clone_to_cstring(opts.input)
 	defer delete(input_cstr)
 	w, h, ch: c.int
+	t := time.now()
 	pixels := stb.load(input_cstr, &w, &h, &ch, 3)
 	if pixels == nil {
 		fail(fmt.tprintf("无法读取图像: %s", opts.input))
@@ -137,6 +145,7 @@ main :: proc() {
 	}
 	defer stb.image_free(pixels)
 	info(fmt.tprintf("输入: %s (%dx%d)", opts.input, w, h))
+	t = stage_time("图像加载", t)
 
 	auto_mtf := opts.mtf
 	if opts.auto {
@@ -172,6 +181,7 @@ main :: proc() {
 		)
 		cfg_text_owned = true
 	}
+	t = stage_time("auto 分析", t)
 
 	cfg: Film_Config
 	cfg_ok: bool
@@ -185,6 +195,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer destroy_film_config(&cfg)
+	t = stage_time("配置解析", t)
 	if len(cfg.emulsions) == 0 {
 		fail("配置中至少需要一个 [[emulsion]] 块")
 		os.exit(1)
@@ -243,6 +254,7 @@ main :: proc() {
 		ray_front[i * 3 + 1] = srgb_to_linear(f32(resized[i * 3 + 1]), opts.gamma)
 		ray_front[i * 3 + 2] = srgb_to_linear(f32(resized[i * 3 + 2]), opts.gamma)
 	}
+	t = stage_time("缩放与线性化", t)
 
 	ctx: Compute_Context
 	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
@@ -250,6 +262,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer sim_cleanup(&ctx)
+	t = stage_time("渲染器初始化", t)
 
 	layer_absorbs: [dynamic][3]f32
 	defer delete(layer_absorbs)
@@ -336,10 +349,12 @@ main :: proc() {
 				ag         = params.ag,
 				lambda_fac = params.lambda_fac,
 			}
+			t = stage_time(fmt.tprintf("[emu %d] CPU 预处理", idx), t)
 			if !dispatch_render(&ctx, render_params, src, neg) {
 				fail("调度失败")
 				os.exit(1)
 			}
+			t = stage_time(fmt.tprintf("[emu %d] GPU 渲染", idx), t)
 			dens := make([]f32, n)
 			copy(dens, neg)
 			append(&layer_absorbs, absorb)
@@ -382,6 +397,7 @@ main :: proc() {
 			front[i * 3 + 2] *= 1.0 - absorb[2] + absorb[2] * d
 		}
 	}
+	t = stage_time("front 组装", t)
 
 	final := front
 	defer if back_refl > EPS {delete(final)}
@@ -422,6 +438,7 @@ main :: proc() {
 			seed      = 424242,
 			film_px   = film_thick,
 		}
+		t = stage_time("halation 准备", t)
 		if !dispatch_bounce(
 			&ctx,
 			bounce_params,
@@ -434,12 +451,14 @@ main :: proc() {
 			fail("调度失败")
 			os.exit(1)
 		}
+		t = stage_time("halation GPU 回弹", t)
 		final = make([]f32, n * 3)
 		for i in 0 ..< n * 3 {
 			final[i] = clamp(front[i] + bounced[i] * back_refl, 0.0, 1.0)
 		}
 	}
 	success("仿真完成")
+	t = stage_time("合成与输出", t)
 
 	out8 := make([]u8, n * 3)
 	defer delete(out8)
@@ -485,5 +504,6 @@ main :: proc() {
 		os.exit(1)
 	}
 	success(fmt.tprintf("已保存 %s", opts.output))
+	success(fmt.tprintf("总耗时 %s", time.since(start)))
 }
 

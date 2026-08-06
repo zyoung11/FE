@@ -16,7 +16,7 @@ if [ ! -d "$MINGW_LIB" ]; then
 fi
 
 if command -v nvcc >/dev/null 2>&1; then
-    nvcc -ptx -arch=compute_80 -O3 kernel.cu -o kernel.ptx
+    nvcc -ptx -arch=compute_80 -O3 -use_fast_math kernel.cu -o kernel.ptx
 fi
 
 rm -rf "$WINBUILD"
@@ -32,7 +32,7 @@ clang --target=x86_64-w64-windows-gnu -c build/win/crt_shim.asm -o "$WINBUILD/cr
 clang --target=x86_64-w64-windows-gnu -c build/win/tls_shim.asm -o "$WINBUILD/tls_shim.obj"
 clang --target=x86_64-w64-windows-gnu -c build/win/fopen_shim.c -o "$WINBUILD/fopen_shim.obj"
 
-odin build . -target:windows_amd64 -build-mode:obj
+odin build . -target:windows_amd64 -build-mode:obj -o:speed
 trap 'rm -f *.obj' EXIT
 
 lld-link -lldmingw /entry:main /subsystem:console /out:retraced-odin.exe \
