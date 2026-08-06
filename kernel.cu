@@ -201,12 +201,12 @@ __global__ void bounce_kernel(
 }
 
 __global__ void lap_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h) {
-	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
-	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= w || y >= h) {
+	unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= w * h) {
 		return;
 	}
-	unsigned i = y * w + x;
+	unsigned x = i % w;
+	unsigned y = i / w;
 	if (x == 0u || y == 0u || x == w - 1u || y == h - 1u) {
 		dst[i] = 0.0f;
 		return;
@@ -215,11 +215,12 @@ __global__ void lap_kernel(const float* __restrict__ src, float* __restrict__ ds
 }
 
 __global__ void gauss_h_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h, const float* __restrict__ kernel, int r) {
-	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
-	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= w || y >= h) {
+	unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= w * h) {
 		return;
 	}
+	unsigned x = i % w;
+	unsigned y = i / w;
 	float acc = 0.0f;
 	for (int j = 0; j <= 2 * r; j++) {
 		int sx = (int)x + j - r;
@@ -227,15 +228,16 @@ __global__ void gauss_h_kernel(const float* __restrict__ src, float* __restrict_
 			acc += src[y * w + (unsigned)sx] * kernel[j];
 		}
 	}
-	dst[y * w + x] = acc;
+	dst[i] = acc;
 }
 
 __global__ void gauss_v_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h, const float* __restrict__ kernel, int r) {
-	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
-	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= w || y >= h) {
+	unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= w * h) {
 		return;
 	}
+	unsigned x = i % w;
+	unsigned y = i / w;
 	float acc = 0.0f;
 	for (int j = 0; j <= 2 * r; j++) {
 		int sy = (int)y + j - r;
@@ -243,7 +245,7 @@ __global__ void gauss_v_kernel(const float* __restrict__ src, float* __restrict_
 			acc += src[(unsigned)sy * w + x] * kernel[j];
 		}
 	}
-	dst[y * w + x] = acc;
+	dst[i] = acc;
 }
 
 __global__ void tmap_kernel(const float* __restrict__ energy, float* __restrict__ t, float mean, unsigned n) {
