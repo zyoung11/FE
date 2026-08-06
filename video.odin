@@ -289,13 +289,14 @@ video_in_finish :: proc(v: ^Video_In) {
 video_out_start :: proc(path: string, w: int, h: int, fps: f32, audio_source: string, bitrate: int, maxrate: int) -> (^Video_Out, bool) {
 	v := new(Video_Out)
 	cmd := fmt.tprintf(
-		"ffmpeg -y -v error -hide_banner -i \"%s\" -f rawvideo -pix_fmt rgb24 -s %dx%d -r %.3f -i - -map 1:v:0 -map 0:a? -c:v hevc_nvenc -preset p5 -rc vbr -cq 23 -b:v %dM -maxrate %dM -c:a aac -b:a 192k -pix_fmt yuv420p \"%s\"",
+		"ffmpeg -y -v error -hide_banner -i \"%s\" -f rawvideo -pix_fmt rgb24 -s %dx%d -r %.3f -i - -map 1:v:0 -map 0:a? -c:v hevc_nvenc -preset p5 -rc vbr -b:v %dM -maxrate %dM -bufsize %dM -c:a aac -b:a 192k -pix_fmt yuv420p \"%s\"",
 		audio_source,
 		w,
 		h,
 		fps,
 		bitrate,
 		maxrate,
+		max(1, bitrate / 4),
 		path,
 	)
 	p, ok := spawn_ffmpeg(cmd, false)
