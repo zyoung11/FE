@@ -9,6 +9,8 @@ import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sys/windows"
+import "core:sync/chan"
+import "core:thread"
 import "core:time"
 import stb "vendor:stb/image"
 
@@ -660,6 +662,81 @@ render_frame :: proc(
 	return out8, w_sim, h_sim, true
 }
 
+Render_Task :: struct {
+	frame: int,
+	data:  []u8,
+}
+
+Render_Result :: struct {
+	frame: int,
+	out8:  []u8,
+}
+
+Render_Worker :: struct {
+	idx:       int,
+	tasks:     chan.Chan(Render_Task),
+	results:   chan.Chan(Render_Result),
+	thread:    ^thread.Thread,
+	opts:      ^Options,
+	cfg:       ^Film_Config,
+	device:    Device_Choice,
+	fw:        int,
+	fh:        int,
+	seed_base: u32,
+	w_sim:     u32,
+	h_sim:     u32,
+	n_layers:  u32,
+	ctx:       Compute_Context,
+}
+
+render_worker_main :: proc(t: ^thread.Thread) {
+	w := cast(^Render_Worker)t.data
+	if !sim_init(&w.ctx, w.w_sim, w.h_sim, w.n_layers, w.device) {
+		fail("渲染 worker 初始化失败")
+		os.exit(1)
+	}
+	defer sim_cleanup(&w.ctx)
+	for {
+		task, ok := chan.recv(w.tasks)
+		if !ok {
+			break
+		}
+		tt := time.now()
+		out8, _, _, rok := render_frame(&w.ctx, w.opts, w.cfg, task.data, w.fw, w.fh, w.seed_base + u32(task.frame) * 6743, &tt, false)
+		delete(task.data)
+		if !rok {
+			fail("帧渲染失败")
+			os.exit(1)
+		}
+		if !chan.send(w.results, Render_Result{frame = task.frame, out8 = out8}) {
+			break
+		}
+	}
+}
+
+collect_one :: proc(res: Render_Result, next_seq: ^int, pending: ^map[int][]u8, vout: ^Video_Out) -> bool {
+	if res.frame == next_seq^ {
+		if !video_send_encode(vout, res.out8) {
+			return false
+		}
+		next_seq^ += 1
+		for {
+			if out, ok := pending^[next_seq^]; ok {
+				if !video_send_encode(vout, out) {
+					return false
+				}
+				delete_key(pending, next_seq^)
+				next_seq^ += 1
+			} else {
+				break
+			}
+		}
+	} else {
+		pending^[res.frame] = res.out8
+	}
+	return true
+}
+
 run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	vinfo, ok := video_probe(opts.input)
 	if !ok {
@@ -695,74 +772,114 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	w_sim := max(1, int(f32(vinfo.width) * f32(h_sim) / f32(vinfo.height) + 0.5))
 	info(fmt.tprintf("输出: %dx%d @%.2f fps", w_sim, h_sim, vinfo.fps))
 
-	ctx: Compute_Context
-	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
-		fail("渲染器初始化失败")
-		os.exit(1)
-	}
-	defer sim_cleanup(&ctx)
-
 	vout, ok4 := video_out_start(opts.output, w_sim, h_sim, vinfo.fps, opts.input, opts.bitrate, opts.maxrate)
 	if !ok4 {
 		fail("视频编码器启动失败 (需要 ffmpeg 在 PATH 中, 且显卡支持 NVENC)")
 		os.exit(1)
 	}
 
+	results, rerr := chan.create_buffered(chan.Chan(Render_Result), 8, context.allocator)
+	if rerr != nil {
+		fail("创建渲染结果队列失败")
+		os.exit(1)
+	}
+	defer chan.destroy(results)
+	n_workers := 2
+	workers := make([]^Render_Worker, n_workers)
+	defer {
+		for w in workers {
+			if w != nil {
+				chan.close(w.tasks)
+				thread.destroy(w.thread)
+				chan.destroy(w.tasks)
+				free(w)
+			}
+		}
+		delete(workers)
+	}
+	for i in 0 ..< n_workers {
+		w := new(Render_Worker)
+		w.idx = i
+		w.opts = opts
+		w.cfg = &cfg
+		w.device = device_choice
+		w.fw = vinfo.width
+		w.fh = vinfo.height
+		w.seed_base = opts.seed
+		w.w_sim = u32(w_sim)
+		w.h_sim = u32(h_sim)
+		w.n_layers = u32(len(cfg.emulsions))
+		w.results = results
+		tasks, terr := chan.create_buffered(chan.Chan(Render_Task), 4, context.allocator)
+		if terr != nil {
+			fail("创建渲染任务队列失败")
+			os.exit(1)
+		}
+		w.tasks = tasks
+		w.thread = thread.create(render_worker_main)
+		w.thread.data = w
+		thread.start(w.thread)
+		workers[i] = w
+	}
+
 	start := time.now()
-	n_done := 0
-	n_skipped := 0
 	total := vinfo.n_frames
-	prev_out: []u8
-	defer delete(prev_out)
-	prev_frame: []u8
-	defer delete(prev_frame)
+	next_seq := 0
+	pending: map[int][]u8
+	defer delete(pending)
+	n_encoded := 0
+	actual := 0
 	for f := 0; total < 0 || f < total; f += 1 {
 		if f > 0 {
 			if !video_next_frame(vin, frame_buf) {
 				break
 			}
 		}
-		similar := prev_out != nil && prev_frame != nil && frames_similar(prev_frame, frame_buf, vinfo.width, vinfo.height)
-		if similar {
-			buf := make([]u8, len(prev_out))
-			copy(buf, prev_out)
-			if !video_send_encode(vout, buf) {
+		task := Render_Task{frame = f, data = make([]u8, len(frame_buf))}
+		copy(task.data, frame_buf)
+		if !chan.send(workers[f % n_workers].tasks, task) {
+			fail("渲染队列关闭")
+			os.exit(1)
+		}
+		actual = f + 1
+		for {
+			res, ok := chan.try_recv(results)
+			if !ok {
+				break
+			}
+			if !collect_one(res, &next_seq, &pending, vout) {
 				fail("编码输出失败")
 				os.exit(1)
 			}
-			n_skipped += 1
-		} else {
-			t := start
-			out8, _, _, rok := render_frame(&ctx, opts, &cfg, frame_buf, vinfo.width, vinfo.height, opts.seed + u32(f) * 6743, &t, false)
-			if !rok {
-				fail("帧渲染失败")
-				os.exit(1)
+			n_encoded = next_seq
+			if n_encoded % 10 == 0 {
+				elapsed := time.duration_seconds(time.since(start))
+				avg := f32(elapsed) / f32(max(1, n_encoded))
+				eta := avg * f32(max(0, actual - n_encoded))
+				info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_encoded, actual, avg, elapsed, eta))
 			}
-			if prev_out != nil {
-				delete(prev_out)
-			}
-			prev_out = make([]u8, len(out8))
-			copy(prev_out, out8)
-			if !video_send_encode(vout, out8) {
-				fail("编码输出失败")
-				os.exit(1)
-			}
-		}
-		if prev_frame == nil {
-			prev_frame = make([]u8, len(frame_buf))
-		}
-		copy(prev_frame, frame_buf)
-		n_done += 1
-		if total < 0 {
-			info(fmt.tprintf("帧 %d 完成 (%.2fs/帧, 跳过 %d)", n_done, f32(time.duration_seconds(time.since(start))) / f32(n_done), n_skipped))
-		} else if n_done % 10 == 0 || n_done == total {
-			elapsed := time.duration_seconds(time.since(start))
-			avg := f32(elapsed) / f32(n_done)
-			eta := avg * f32(max(0, total - n_done))
-			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs, 跳过 %d)", n_done, total, avg, elapsed, eta, n_skipped))
 		}
 	}
+	for next_seq < actual {
+		res, ok := chan.recv(results)
+		if !ok {
+			fail("渲染结果队列关闭")
+			os.exit(1)
+		}
+		if !collect_one(res, &next_seq, &pending, vout) {
+			fail("编码输出失败")
+			os.exit(1)
+		}
+		n_encoded = next_seq
+		if n_encoded % 10 == 0 || next_seq == actual {
+			elapsed := time.duration_seconds(time.since(start))
+			avg := f32(elapsed) / f32(max(1, n_encoded))
+			eta := avg * f32(max(0, actual - n_encoded))
+			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_encoded, actual, avg, elapsed, eta))
+		}
+	}
+
 	video_in_finish(vin)
 	video_out_finish(vout)
-	success(fmt.tprintf("视频处理完成: %d 帧, 总耗时 %s", n_done, time.since(start)))
+	success(fmt.tprintf("视频处理完成: %d 帧, 总耗时 %s", n_encoded, time.since(start)))
 }
