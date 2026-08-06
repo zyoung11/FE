@@ -128,6 +128,16 @@ linear_to_srgb :: proc(x: f32, gamma: f32) -> f32 {
     return 1.055 * math.pow(x, 1.0 / gamma) - 0.055
 }
 
+filmic_curve :: proc(x: f32, strength: f32) -> f32 {
+    if strength <= 0 {
+        return x
+    }
+    a := 2.51 * x
+    c := 2.43 * x
+    y := (x * (a + 0.03)) / (x * (c + 0.59) + 0.14)
+    return x * (1.0 - strength) + y * strength
+}
+
 build_vectors :: proc(dye: [3]u8) -> (absorb, expo_w: [3]f32) {
     comp := [3]f32 {
         1.0 - f32(dye[0]) / 255.0,

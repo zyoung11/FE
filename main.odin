@@ -109,12 +109,14 @@ Out8_Data :: struct {
 	gamma:    f32,
 	exposure: f32,
 	contrast: f32,
+	film:     f32,
 }
 
 out8_task :: proc(data: rawptr, i: int) {
 	d := cast(^Out8_Data)data
 	v := linear_to_srgb(d.final[i], d.gamma)
 	v = clamp((v - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	v = filmic_curve(v, d.film)
 	d.out8[i] = u8(clamp(255.0 * v, 0.0, 255.0))
 }
 
@@ -129,8 +131,10 @@ success :: proc(msg: string) {fmt.printfln("%s[+]%s %s", GREEN, RESET, msg)}
 warn :: proc(msg: string) {fmt.printfln("%s[!]%s %s", YELLOW, RESET, msg)}
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
 
-stage_time :: proc(label: string, t0: time.Time) -> time.Time {
-	info(fmt.tprintf("%s: %.2fs", label, time.duration_seconds(time.since(t0))))
+stage_time :: proc(label: string, t0: time.Time, verbose := true) -> time.Time {
+	if verbose {
+		info(fmt.tprintf("%s: %.2fs", label, time.duration_seconds(time.since(t0))))
+	}
 	return time.now()
 }
 
@@ -155,6 +159,8 @@ Options :: struct {
 	sigma_filter:   f32 `args:"name=sigma_filter" usage:"覆盖采样抖动 sigma (-1 使用配置)"`,
 	seed:           u32 `usage:"随机种子"`,
 	device:         string `usage:"渲染设备: auto(默认) | cpu | cuda | cuda:N"`,
+	video:          bool `usage:"视频模式 (输入为视频文件, 输出视频)"`,
+	film:           f32 `usage:"胶片 S 曲线强度 (0=关, 1=满, 视频默认 0.5)"`,
 }
 
 main :: proc() {
@@ -167,7 +173,6 @@ main :: proc() {
 	opts.output = "out.png"
 	opts.mode = "color"
 	opts.film_cfg = "film-config.toml"
-	opts.height = 1080
 	opts.supersample = 0
 	opts.samples = 0
 	opts.bounce_samples = 0
@@ -196,8 +201,11 @@ main :: proc() {
 		os.exit(1)
 	}
 	if opts.height <= 0 {
-		fail("height 必须为正数")
-		os.exit(1)
+		if opts.video {
+			opts.height = 2160
+		} else {
+			opts.height = 1080
+		}
 	}
 	device_choice: Device_Choice
 	switch opts.device {
@@ -223,8 +231,6 @@ main :: proc() {
 		}
 	}
 	if opts.auto {
-		if opts.samples == 0 {opts.samples = 400}
-		if opts.bounce_samples == 0 {opts.bounce_samples = 400}
 		if opts.supersample == 0 {opts.supersample = 2}
 		if opts.gamma == 0 {opts.gamma = 2.4}
 		if opts.exposure == 999.0 {opts.exposure = 0.08}
@@ -232,14 +238,16 @@ main :: proc() {
 		if opts.reflectance < 0 {opts.reflectance = 0.03}
 		if opts.thickness < 0 {opts.thickness = 20.0}
 	} else {
-		if opts.samples == 0 {opts.samples = 400}
-		if opts.bounce_samples == 0 {opts.bounce_samples = 400}
 		if opts.supersample == 0 {opts.supersample = 1}
 		if opts.gamma == 0 {opts.gamma = 2.2}
 		if opts.exposure == 999.0 {opts.exposure = 0.0}
 		if opts.contrast == 0 {opts.contrast = 1.0}
 	}
 
+	if opts.video {
+		run_video(&opts, device_choice)
+		return
+	}
 	input_cstr := strings.clone_to_cstring(opts.input)
 	defer delete(input_cstr)
 	w, h, ch: c.int
@@ -253,15 +261,96 @@ main :: proc() {
 	info(fmt.tprintf("输入: %s (%dx%d)", opts.input, w, h))
 	t = stage_time("图像加载", t)
 
+	if opts.video {
+		run_video(&opts, device_choice)
+		return
+	}
+	cfg, cfg_ok := setup_config(&opts, pixels[:int(w) * int(h) * 3], int(w), int(h), false)
+	if !cfg_ok {
+		fail(fmt.tprintf("无法解析胶片配置: %s", opts.film_cfg))
+		os.exit(1)
+	}
+	defer destroy_film_config(&cfg)
+	t = stage_time("配置解析", t)
+	h_sim := opts.height * opts.supersample
+	w_sim := max(1, int(f32(w) * f32(h_sim) / f32(h) + 0.5))
+	ctx: Compute_Context
+	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
+		fail("渲染器初始化失败")
+		os.exit(1)
+	}
+	defer sim_cleanup(&ctx)
+	t = stage_time("渲染器初始化", t)
+
+	out8, out_w, out_h, rok := render_frame(&ctx, &opts, &cfg, pixels[:int(w) * int(h) * 3], int(w), int(h), opts.seed, &t, true)
+	if !rok {
+		fail("渲染失败")
+		os.exit(1)
+	}
+	defer delete(out8)
+
+	png_data := out8
+	defer if opts.supersample > 1 {delete(png_data)}
+	if opts.supersample > 1 {
+		out_w = w_sim / opts.supersample
+		out_h = opts.height
+		png_data = make([]u8, out_w * out_h * 3)
+		stb.resize_uint8(
+			raw_data(out8),
+			c.int(w_sim),
+			c.int(h_sim),
+			c.int(w_sim * 3),
+			raw_data(png_data),
+			c.int(out_w),
+			c.int(out_h),
+			c.int(out_w * 3),
+			3,
+		)
+	}
+
+	output_cstr := strings.clone_to_cstring(opts.output)
+	defer delete(output_cstr)
+	if stb.write_png(
+		   output_cstr,
+		   c.int(out_w),
+		   c.int(out_h),
+		   3,
+		   raw_data(png_data),
+		   c.int(out_w * 3),
+	   ) ==
+	   0 {
+		fail(fmt.tprintf("无法写出图像: %s", opts.output))
+		os.exit(1)
+	}
+	success(fmt.tprintf("已保存 %s", opts.output))
+	success(fmt.tprintf("总耗时 %s", time.since(start)))
+}
+
+setup_config :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> (Film_Config, bool) {
+	if opts.samples == 0 {opts.samples = 400}
+	if opts.bounce_samples == 0 {opts.bounce_samples = 400}
 	auto_mtf := opts.mtf
 	if opts.auto {
-		sharpness := content_sharpness(pixels, int(w), int(h))
+		sharpness := content_sharpness(raw_data(pixels), w, h)
 		auto_res := compute_auto(sharpness, opts.height)
+		gr := auto_res.grain_radius
+		sf := auto_res.sigma_filter
+		gs := auto_res.grain_sigma
+		if for_video {
+			gr *= 2.5
+			sf *= 4.0
+			gs *= 2.0
+		}
 		info(fmt.tprintf("内容锐度: %.2f", sharpness))
-		if opts.grain_radius < 0 {opts.grain_radius = auto_res.grain_radius}
-		if opts.grain_sigma < 0 {opts.grain_sigma = auto_res.grain_sigma}
-		if opts.sigma_filter < 0 {opts.sigma_filter = auto_res.sigma_filter}
-		if auto_mtf < 0 {auto_mtf = auto_res.mtf_abs}
+		if opts.grain_radius < 0 {opts.grain_radius = gr}
+		if opts.grain_sigma < 0 {opts.grain_sigma = gs}
+		if opts.sigma_filter < 0 {opts.sigma_filter = sf}
+		if auto_mtf < 0 {
+			auto_mtf = auto_res.mtf_abs
+			if for_video {
+				auto_mtf *= 2.0
+			}
+		}
 		info(
 			fmt.tprintf(
 				"auto: 颗粒 R=%.3f SIG=%.3f F=%.3f MTF=%.3f",
@@ -287,8 +376,6 @@ main :: proc() {
 		)
 		cfg_text_owned = true
 	}
-	t = stage_time("auto 分析", t)
-
 	cfg: Film_Config
 	cfg_ok: bool
 	if opts.auto {
@@ -298,18 +385,67 @@ main :: proc() {
 	}
 	if !cfg_ok {
 		fail(fmt.tprintf("无法解析胶片配置: %s", opts.film_cfg))
-		os.exit(1)
+		return {}, false
 	}
-	defer destroy_film_config(&cfg)
-	t = stage_time("配置解析", t)
 	if len(cfg.emulsions) == 0 {
+		destroy_film_config(&cfg)
 		fail("配置中至少需要一个 [[emulsion]] 块")
-		os.exit(1)
+		return {}, false
 	}
 	if len(cfg.filters) != len(cfg.emulsions) && len(cfg.filters) != len(cfg.emulsions) - 1 {
+		destroy_film_config(&cfg)
 		fail("#[[filter]] 必须等于 #[[emulsion]] 或少一个")
-		os.exit(1)
+		return {}, false
 	}
+	if opts.mtf >= 0 {
+		for &emu in cfg.emulsions {
+			emu.mtf_blur = opts.mtf * 0.6
+			emu.mtf_blur_max = opts.mtf * 1.4
+		}
+	}
+	return cfg, true
+}
+
+render_frame :: proc(
+	ctx: ^Compute_Context,
+	opts: ^Options,
+	cfg: ^Film_Config,
+	input: []u8,
+	fw: int,
+	fh: int,
+	frame_seed: u32,
+	t: ^time.Time,
+	verbose: bool,
+) -> ([]u8, int, int, bool) {
+	h_sim := opts.height * opts.supersample
+	w_sim := max(1, int(f32(fw) * f32(h_sim) / f32(fh) + 0.5))
+	resized := make([]u8, w_sim * h_sim * 3)
+	defer delete(resized)
+	if fw != w_sim || fh != h_sim {
+		stb.resize_uint8(
+			raw_data(input),
+			c.int(fw),
+			c.int(fh),
+			c.int(fw * 3),
+			raw_data(resized),
+			c.int(w_sim),
+			c.int(h_sim),
+			c.int(w_sim * 3),
+			3,
+		)
+		if verbose {
+			info(fmt.tprintf("缩放至: %dx%d", w_sim, h_sim))
+		}
+	} else {
+		copy(resized, input[:fw * fh * 3])
+	}
+
+	n := w_sim * h_sim
+	ray_front := make([]f32, n * 3)
+	defer delete(ray_front)
+	parallel_for(n, &Lin_Data{ray_front = ray_front, resized = resized, gamma = opts.gamma}, lin_task)
+	t^ = stage_time("缩放与线性化", t^, verbose)
+
 	film_thick := f32(1.0)
 	if len(cfg.bases) > 0 {
 		film_thick = cfg.bases[0].thickness
@@ -324,47 +460,6 @@ main :: proc() {
 	if opts.reflectance >= 0 {
 		back_refl = opts.reflectance
 	}
-	if opts.mtf >= 0 {
-		for &emu in cfg.emulsions {
-			emu.mtf_blur = opts.mtf * 0.6
-			emu.mtf_blur_max = opts.mtf * 1.4
-		}
-	}
-
-	h_sim := opts.height * opts.supersample
-	w_sim := max(1, int(f32(w) * f32(h_sim) / f32(h) + 0.5))
-	resized := make([]u8, w_sim * h_sim * 3)
-	defer delete(resized)
-	if int(w) != w_sim || int(h) != h_sim {
-		stb.resize_uint8(
-			pixels,
-			w,
-			h,
-			w * 3,
-			raw_data(resized),
-			c.int(w_sim),
-			c.int(h_sim),
-			c.int(w_sim * 3),
-			3,
-		)
-		info(fmt.tprintf("缩放至: %dx%d", w_sim, h_sim))
-	} else {
-		copy(resized, pixels[:w * h * 3])
-	}
-
-	n := w_sim * h_sim
-	ray_front := make([]f32, n * 3)
-	defer delete(ray_front)
-	parallel_for(n, &Lin_Data{ray_front = ray_front, resized = resized, gamma = opts.gamma}, lin_task)
-	t = stage_time("缩放与线性化", t)
-
-	ctx: Compute_Context
-	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
-		fail("渲染器初始化失败")
-		os.exit(1)
-	}
-	defer sim_cleanup(&ctx)
-	t = stage_time("渲染器初始化", t)
 
 	layer_absorbs: [dynamic][3]f32
 	defer delete(layer_absorbs)
@@ -410,40 +505,42 @@ main :: proc() {
 			}
 			if mtf_max == nil || mtf_max.? <= mtf.? {
 				if sigma_mtf > 0 {
-					blurred, ok := gauss_blur_dispatch(&ctx, src, w_sim, h_sim, sigma_mtf)
+					blurred, ok := gauss_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf)
 					if !ok {
 						fail("高斯模糊失败")
-						os.exit(1)
+						return nil, 0, 0, false
 					}
 					defer delete(blurred)
 					copy(src, blurred)
 				}
 			} else if sigma_mtf > 0 {
-				blurred, ok := adaptive_blur_dispatch(&ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
+				blurred, ok := adaptive_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
 				if !ok {
 					fail("自适应模糊失败")
-					os.exit(1)
+					return nil, 0, 0, false
 				}
 				defer delete(blurred)
 				copy(src, blurred)
 			}
 			params := prep_physics(r_px, sig_px, sig_f)
-			info(
-				fmt.tprintf(
-					"[emu %d] dye=[%d, %d, %d]  R=%.3fpx  mtf=%.3fpx",
-					idx,
-					emu.dye[0],
-					emu.dye[1],
-					emu.dye[2],
-					params.r_px / ss,
-					sigma_mtf / ss,
-				),
-			)
+			if verbose {
+				info(
+					fmt.tprintf(
+						"[emu %d] dye=[%d, %d, %d]  R=%.3fpx  mtf=%.3fpx",
+						idx,
+						emu.dye[0],
+						emu.dye[1],
+						emu.dye[2],
+						params.r_px / ss,
+						sigma_mtf / ss,
+					),
+				)
+			}
 			render_params := Render_Params {
 				width      = u32(w_sim),
 				height     = u32(h_sim),
 				n_samples  = u32(opts.samples),
-				seed       = opts.seed + u32(idx) * 19,
+				seed       = frame_seed + u32(idx) * 19,
 				sigma_f    = params.sig_f_px,
 				sigma      = params.sig_px,
 				r2         = params.r2,
@@ -453,12 +550,12 @@ main :: proc() {
 				ag         = params.ag,
 				lambda_fac = params.lambda_fac,
 			}
-			t = stage_time(fmt.tprintf("[emu %d] CPU 预处理", idx), t)
-			if !dispatch_render(&ctx, render_params, src, neg) {
+			t^ = stage_time(fmt.tprintf("[emu %d] CPU 预处理", idx), t^, verbose)
+			if !dispatch_render(ctx, render_params, src, neg) {
 				fail("调度失败")
-				os.exit(1)
+				return nil, 0, 0, false
 			}
-			t = stage_time(fmt.tprintf("[emu %d] GPU 渲染", idx), t)
+			t^ = stage_time(fmt.tprintf("[emu %d] GPU 渲染", idx), t^, verbose)
 			dens := make([]f32, n)
 			copy(dens, neg)
 			append(&layer_absorbs, absorb)
@@ -468,12 +565,18 @@ main :: proc() {
 			parallel_for(n, &Front_Update_Data{neg = neg, ray_front = ray_front, absorb = absorb}, front_update_task)
 		case .Filter:
 			col := cfg.filters[item.index].color
-			info(fmt.tprintf("[filter %d] colour=[%d, %d, %d]", idx, col[0], col[1], col[2]))
+			if verbose {
+				info(fmt.tprintf("[filter %d] colour=[%d, %d, %d]", idx, col[0], col[1], col[2]))
+			}
 			parallel_for(n, &Filter_Data{ray_front = ray_front, col = col}, filter_task)
 		case .Film_Base:
-			info(fmt.tprintf("[base] thickness=%.1f", film_thick))
+			if verbose {
+				info(fmt.tprintf("[base] thickness=%.1f", film_thick))
+			}
 		case .Back:
-			info(fmt.tprintf("[back] reflectance=%.4f", back_refl))
+			if verbose {
+				info(fmt.tprintf("[back] reflectance=%.4f", back_refl))
+			}
 		}
 	}
 
@@ -487,7 +590,7 @@ main :: proc() {
 		dens := layer_dens[l]
 		parallel_for(n, &Front_Assemble_Data{front = front, dens = dens, absorb = absorb}, front_assemble_task)
 	}
-	t = stage_time("front 组装", t)
+	t^ = stage_time("front 组装", t^, verbose)
 
 	final := front
 	defer if back_refl > EPS {delete(final)}
@@ -516,7 +619,9 @@ main :: proc() {
 		}
 		bounced := make([]f32, n * 3)
 		defer delete(bounced)
-		info(fmt.tprintf("halation 回弹 %d 采样/像素 ...", opts.bounce_samples))
+		if verbose {
+			info(fmt.tprintf("halation 回弹 %d 采样/像素 ...", opts.bounce_samples))
+		}
 		bounce_params := Bounce_Params {
 			width     = u32(w_sim),
 			height    = u32(h_sim),
@@ -525,9 +630,9 @@ main :: proc() {
 			seed      = 424242,
 			film_px   = film_thick,
 		}
-		t = stage_time("halation 准备", t)
+		t^ = stage_time("halation 准备", t^, verbose)
 		if !dispatch_bounce(
-			&ctx,
+			ctx,
 			bounce_params,
 			front_hdr,
 			bounced,
@@ -536,55 +641,98 @@ main :: proc() {
 			depth,
 		) {
 			fail("调度失败")
-			os.exit(1)
+			return nil, 0, 0, false
 		}
-		t = stage_time("halation GPU 回弹", t)
+		t^ = stage_time("halation GPU 回弹", t^, verbose)
 		final = make([]f32, n * 3)
 		parallel_for(n * 3, &Final_Data{front = front, bounced = bounced, final = final, back_refl = back_refl}, final_task)
 	}
-	success("仿真完成")
-	t = stage_time("合成与输出", t)
+	if verbose {
+		success("仿真完成")
+	}
+	t^ = stage_time("合成与输出", t^, verbose)
 
 	out8 := make([]u8, n * 3)
-	defer delete(out8)
-	parallel_for(n * 3, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast}, out8_task)
-
-	out_w := w_sim
-	out_h := h_sim
-	png_data := out8
-	defer if opts.supersample > 1 {delete(png_data)}
-	if opts.supersample > 1 {
-		out_w = w_sim / opts.supersample
-		out_h = opts.height
-		png_data = make([]u8, out_w * out_h * 3)
-		stb.resize_uint8(
-			raw_data(out8),
-			c.int(w_sim),
-			c.int(h_sim),
-			c.int(w_sim * 3),
-			raw_data(png_data),
-			c.int(out_w),
-			c.int(out_h),
-			c.int(out_w * 3),
-			3,
-		)
-	}
-
-	output_cstr := strings.clone_to_cstring(opts.output)
-	defer delete(output_cstr)
-	if stb.write_png(
-		   output_cstr,
-		   c.int(out_w),
-		   c.int(out_h),
-		   3,
-		   raw_data(png_data),
-		   c.int(out_w * 3),
-	   ) ==
-	   0 {
-		fail(fmt.tprintf("无法写出图像: %s", opts.output))
-		os.exit(1)
-	}
-	success(fmt.tprintf("已保存 %s", opts.output))
-	success(fmt.tprintf("总耗时 %s", time.since(start)))
+	parallel_for(n * 3, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast, film = opts.film}, out8_task)
+	return out8, w_sim, h_sim, true
 }
 
+run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
+	vinfo, ok := video_probe(opts.input)
+	if !ok {
+		fail(fmt.tprintf("无法探测视频: %s", opts.input))
+		os.exit(1)
+	}
+	info(fmt.tprintf("视频: %dx%d @%.2f fps, %d 帧", vinfo.width, vinfo.height, vinfo.fps, vinfo.n_frames))
+	opts.supersample = 1
+	if opts.samples == 0 {opts.samples = 128}
+	if opts.bounce_samples == 0 {opts.bounce_samples = 128}
+	if opts.film == 0 {opts.film = 0.5}
+
+	vin, ok2 := video_in_start(opts.input, vinfo)
+	if !ok2 {
+		fail("视频解码器启动失败 (需要 ffmpeg 在 PATH 中)")
+		os.exit(1)
+	}
+	frame_buf := make([]u8, vinfo.width * vinfo.height * 3)
+	defer delete(frame_buf)
+	if !video_next_frame(vin, frame_buf) {
+		fail("无法解码第一帧")
+		os.exit(1)
+	}
+	cfg, cfg_ok := setup_config(opts, frame_buf, vinfo.width, vinfo.height, true)
+	if !cfg_ok {
+		os.exit(1)
+	}
+	defer destroy_film_config(&cfg)
+
+	h_sim := opts.height * opts.supersample
+	w_sim := max(1, int(f32(vinfo.width) * f32(h_sim) / f32(vinfo.height) + 0.5))
+	info(fmt.tprintf("输出: %dx%d @%.2f fps", w_sim, h_sim, vinfo.fps))
+
+	ctx: Compute_Context
+	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
+		fail("渲染器初始化失败")
+		os.exit(1)
+	}
+	defer sim_cleanup(&ctx)
+
+	vout, ok4 := video_out_start(opts.output, w_sim, h_sim, vinfo.fps)
+	if !ok4 {
+		fail("视频编码器启动失败 (需要 ffmpeg 在 PATH 中, 且显卡支持 NVENC)")
+		os.exit(1)
+	}
+
+	start := time.now()
+	n_done := 0
+	total := vinfo.n_frames
+	for f := 0; total < 0 || f < total; f += 1 {
+		if f > 0 {
+			if !video_next_frame(vin, frame_buf) {
+				break
+			}
+		}
+		t := start
+		out8, _, _, rok := render_frame(&ctx, opts, &cfg, frame_buf, vinfo.width, vinfo.height, opts.seed + u32(f) * 6743, &t, false)
+		if !rok {
+			fail("帧渲染失败")
+			os.exit(1)
+		}
+		if !video_send_encode(vout, out8) {
+			fail("编码输出失败")
+			os.exit(1)
+		}
+		n_done += 1
+		if total < 0 {
+			info(fmt.tprintf("帧 %d 完成 (%.2fs/帧)", n_done, f32(time.duration_seconds(time.since(start))) / f32(n_done)))
+		} else if n_done % 10 == 0 || n_done == total {
+			elapsed := time.duration_seconds(time.since(start))
+			avg := f32(elapsed) / f32(n_done)
+			eta := avg * f32(max(0, total - n_done))
+			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_done, total, avg, elapsed, eta))
+		}
+	}
+	video_in_finish(vin)
+	video_out_finish(vout)
+	success(fmt.tprintf("视频处理完成: %d 帧, 总耗时 %s", n_done, time.since(start)))
+}
