@@ -222,13 +222,16 @@ __global__ void gauss_h_kernel(const float* __restrict__ src, float* __restrict_
 	unsigned x = i % w;
 	unsigned y = i / w;
 	float acc = 0.0f;
+	float ksum = 0.0f;
 	for (int j = 0; j <= 2 * r; j++) {
 		int sx = (int)x + j - r;
 		if (sx >= 0 && sx < (int)w) {
-			acc += src[y * w + (unsigned)sx] * kernel[j];
+			float k = kernel[j];
+			acc += src[y * w + (unsigned)sx] * k;
+			ksum += k;
 		}
 	}
-	dst[i] = acc;
+	dst[i] = acc / ksum;
 }
 
 __global__ void gauss_v_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h, const float* __restrict__ kernel, int r) {
@@ -239,13 +242,16 @@ __global__ void gauss_v_kernel(const float* __restrict__ src, float* __restrict_
 	unsigned x = i % w;
 	unsigned y = i / w;
 	float acc = 0.0f;
+	float ksum = 0.0f;
 	for (int j = 0; j <= 2 * r; j++) {
 		int sy = (int)y + j - r;
 		if (sy >= 0 && sy < (int)h) {
-			acc += src[(unsigned)sy * w + x] * kernel[j];
+			float k = kernel[j];
+			acc += src[(unsigned)sy * w + x] * k;
+			ksum += k;
 		}
 	}
-	dst[i] = acc;
+	dst[i] = acc / ksum;
 }
 
 __global__ void tmap_kernel(const float* __restrict__ energy, float* __restrict__ t, float mean, unsigned n) {

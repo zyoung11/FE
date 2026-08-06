@@ -161,6 +161,8 @@ Options :: struct {
 	device:         string `usage:"渲染设备: auto(默认) | cpu | cuda | cuda:N"`,
 	video:          bool `usage:"视频模式 (输入为视频文件, 输出视频)"`,
 	film:           f32 `usage:"胶片 S 曲线强度 (0=关, 1=满, 视频默认 0.5)"`,
+	bitrate:        int `usage:"视频平均码率 Mbps (默认 60)"`,
+	maxrate:        int `usage:"视频峰值码率 Mbps (默认 100)"`,
 }
 
 main :: proc() {
@@ -594,6 +596,7 @@ render_frame :: proc(
 
 	final := front
 	defer if back_refl > EPS {delete(final)}
+	halation_out: []f32
 	if back_refl > EPS {
 		front_hdr := make([]f32, n * 3)
 		defer delete(front_hdr)
@@ -618,7 +621,6 @@ render_frame :: proc(
 			absorb_stack[l * 3 + 2] = layer_absorbs[l][2]
 		}
 		bounced := make([]f32, n * 3)
-		defer delete(bounced)
 		if verbose {
 			info(fmt.tprintf("halation 回弹 %d 采样/像素 ...", opts.bounce_samples))
 		}
@@ -643,6 +645,7 @@ render_frame :: proc(
 			fail("调度失败")
 			return nil, 0, 0, false
 		}
+
 		t^ = stage_time("halation GPU 回弹", t^, verbose)
 		final = make([]f32, n * 3)
 		parallel_for(n * 3, &Final_Data{front = front, bounced = bounced, final = final, back_refl = back_refl}, final_task)
@@ -668,6 +671,8 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	if opts.samples == 0 {opts.samples = 128}
 	if opts.bounce_samples == 0 {opts.bounce_samples = 128}
 	if opts.film == 0 {opts.film = 0.5}
+	if opts.bitrate <= 0 {opts.bitrate = 60}
+	if opts.maxrate <= 0 {opts.maxrate = 100}
 
 	vin, ok2 := video_in_start(opts.input, vinfo)
 	if !ok2 {
@@ -697,7 +702,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	}
 	defer sim_cleanup(&ctx)
 
-	vout, ok4 := video_out_start(opts.output, w_sim, h_sim, vinfo.fps)
+	vout, ok4 := video_out_start(opts.output, w_sim, h_sim, vinfo.fps, opts.input, opts.bitrate, opts.maxrate)
 	if !ok4 {
 		fail("视频编码器启动失败 (需要 ffmpeg 在 PATH 中, 且显卡支持 NVENC)")
 		os.exit(1)
@@ -705,31 +710,56 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 
 	start := time.now()
 	n_done := 0
+	n_skipped := 0
 	total := vinfo.n_frames
+	prev_out: []u8
+	defer delete(prev_out)
+	prev_frame: []u8
+	defer delete(prev_frame)
 	for f := 0; total < 0 || f < total; f += 1 {
 		if f > 0 {
 			if !video_next_frame(vin, frame_buf) {
 				break
 			}
 		}
-		t := start
-		out8, _, _, rok := render_frame(&ctx, opts, &cfg, frame_buf, vinfo.width, vinfo.height, opts.seed + u32(f) * 6743, &t, false)
-		if !rok {
-			fail("帧渲染失败")
-			os.exit(1)
+		similar := prev_out != nil && prev_frame != nil && frames_similar(prev_frame, frame_buf, vinfo.width, vinfo.height)
+		if similar {
+			buf := make([]u8, len(prev_out))
+			copy(buf, prev_out)
+			if !video_send_encode(vout, buf) {
+				fail("编码输出失败")
+				os.exit(1)
+			}
+			n_skipped += 1
+		} else {
+			t := start
+			out8, _, _, rok := render_frame(&ctx, opts, &cfg, frame_buf, vinfo.width, vinfo.height, opts.seed + u32(f) * 6743, &t, false)
+			if !rok {
+				fail("帧渲染失败")
+				os.exit(1)
+			}
+			if prev_out != nil {
+				delete(prev_out)
+			}
+			prev_out = make([]u8, len(out8))
+			copy(prev_out, out8)
+			if !video_send_encode(vout, out8) {
+				fail("编码输出失败")
+				os.exit(1)
+			}
 		}
-		if !video_send_encode(vout, out8) {
-			fail("编码输出失败")
-			os.exit(1)
+		if prev_frame == nil {
+			prev_frame = make([]u8, len(frame_buf))
 		}
+		copy(prev_frame, frame_buf)
 		n_done += 1
 		if total < 0 {
-			info(fmt.tprintf("帧 %d 完成 (%.2fs/帧)", n_done, f32(time.duration_seconds(time.since(start))) / f32(n_done)))
+			info(fmt.tprintf("帧 %d 完成 (%.2fs/帧, 跳过 %d)", n_done, f32(time.duration_seconds(time.since(start))) / f32(n_done), n_skipped))
 		} else if n_done % 10 == 0 || n_done == total {
 			elapsed := time.duration_seconds(time.since(start))
 			avg := f32(elapsed) / f32(n_done)
 			eta := avg * f32(max(0, total - n_done))
-			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_done, total, avg, elapsed, eta))
+			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs, 跳过 %d)", n_done, total, avg, elapsed, eta, n_skipped))
 		}
 	}
 	video_in_finish(vin)

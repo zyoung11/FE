@@ -38,13 +38,16 @@ gauss_h_task :: proc(task: thread.Task) {
         row := band.src[y * band.w:(y + 1) * band.w]
         for x in 0 ..< band.w {
             acc: f32
+            ksum: f32
             for j in 0 ..< len(band.kernel) {
                 sx := x + j - band.r
                 if sx >= 0 && sx < band.w {
-                    acc += row[sx] * band.kernel[j]
+                    k := band.kernel[j]
+                    acc += row[sx] * k
+                    ksum += k
                 }
             }
-            band.dst[y * band.w + x] = acc
+            band.dst[y * band.w + x] = acc / ksum
         }
     }
 }
@@ -54,13 +57,16 @@ gauss_v_task :: proc(task: thread.Task) {
     for x in band.x0 ..< band.x1 {
         for y in 0 ..< band.h {
             acc: f32
+            ksum: f32
             for j in 0 ..< len(band.kernel) {
                 sy := y + j - band.r
                 if sy >= 0 && sy < band.h {
-                    acc += band.src[sy * band.w + x] * band.kernel[j]
+                    k := band.kernel[j]
+                    acc += band.src[sy * band.w + x] * k
+                    ksum += k
                 }
             }
-            band.dst[y * band.w + x] = acc
+            band.dst[y * band.w + x] = acc / ksum
         }
     }
 }

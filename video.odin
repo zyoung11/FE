@@ -286,13 +286,16 @@ video_in_finish :: proc(v: ^Video_In) {
 	free(v)
 }
 
-video_out_start :: proc(path: string, w: int, h: int, fps: f32) -> (^Video_Out, bool) {
+video_out_start :: proc(path: string, w: int, h: int, fps: f32, audio_source: string, bitrate: int, maxrate: int) -> (^Video_Out, bool) {
 	v := new(Video_Out)
 	cmd := fmt.tprintf(
-		"ffmpeg -y -v error -hide_banner -f rawvideo -pix_fmt rgb24 -s %dx%d -r %.3f -i - -an -c:v hevc_nvenc -preset p5 -rc vbr -cq 23 -b:v 25M -maxrate 45M -pix_fmt yuv420p \"%s\"",
+		"ffmpeg -y -v error -hide_banner -i \"%s\" -f rawvideo -pix_fmt rgb24 -s %dx%d -r %.3f -i - -map 1:v:0 -map 0:a? -c:v hevc_nvenc -preset p5 -rc vbr -cq 23 -b:v %dM -maxrate %dM -c:a aac -b:a 192k -pix_fmt yuv420p \"%s\"",
+		audio_source,
 		w,
 		h,
 		fps,
+		bitrate,
+		maxrate,
 		path,
 	)
 	p, ok := spawn_ffmpeg(cmd, false)
@@ -330,6 +333,22 @@ video_encode_thread :: proc(t: ^thread.Thread) {
 		video_write_frame(&v.ffmpeg, buf)
 		delete(buf)
 	}
+}
+
+frames_similar :: proc(a: []u8, b: []u8, w: int, h: int) -> bool {
+	sum: f32
+	count := 0
+	for y := 0; y < h; y += 16 {
+		for x := 0; x < w; x += 16 {
+			i := (y * w + x) * 3
+			sum +=
+				abs(f32(a[i]) - f32(b[i])) +
+				abs(f32(a[i + 1]) - f32(b[i + 1])) +
+				abs(f32(a[i + 2]) - f32(b[i + 2]))
+			count += 3
+		}
+	}
+	return sum / f32(count) < 2.5
 }
 
 video_write_frame :: proc(p: ^Ffmpeg_Proc, buf: []u8) -> bool {
