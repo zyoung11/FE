@@ -12,6 +12,112 @@ import "core:sys/windows"
 import "core:time"
 import stb "vendor:stb/image"
 
+Lin_Data :: struct {
+	ray_front: []f32,
+	resized:   []u8,
+	gamma:     f32,
+}
+
+lin_task :: proc(data: rawptr, i: int) {
+	d := cast(^Lin_Data)data
+	d.ray_front[i * 3 + 0] = srgb_to_linear(f32(d.resized[i * 3 + 0]), d.gamma)
+	d.ray_front[i * 3 + 1] = srgb_to_linear(f32(d.resized[i * 3 + 1]), d.gamma)
+	d.ray_front[i * 3 + 2] = srgb_to_linear(f32(d.resized[i * 3 + 2]), d.gamma)
+}
+
+Src_Data :: struct {
+	ray_front: []f32,
+	src:       []f32,
+	expo_w:    [3]f32,
+}
+
+src_task :: proc(data: rawptr, i: int) {
+	d := cast(^Src_Data)data
+	lum :=
+		d.ray_front[i * 3] * d.expo_w[0] +
+		d.ray_front[i * 3 + 1] * d.expo_w[1] +
+		d.ray_front[i * 3 + 2] * d.expo_w[2]
+	d.src[i] = 1.0 - clamp(lum, 0.0, 1.0)
+}
+
+Front_Update_Data :: struct {
+	neg:       []f32,
+	ray_front: []f32,
+	absorb:    [3]f32,
+}
+
+front_update_task :: proc(data: rawptr, i: int) {
+	d := cast(^Front_Update_Data)data
+	dd := d.neg[i]
+	d.ray_front[i * 3 + 0] *= 1.0 - d.absorb[0] * (1.0 - dd)
+	d.ray_front[i * 3 + 1] *= 1.0 - d.absorb[1] * (1.0 - dd)
+	d.ray_front[i * 3 + 2] *= 1.0 - d.absorb[2] * (1.0 - dd)
+}
+
+Filter_Data :: struct {
+	ray_front: []f32,
+	col:       [3]u8,
+}
+
+filter_task :: proc(data: rawptr, i: int) {
+	d := cast(^Filter_Data)data
+	d.ray_front[i * 3 + 0] *= f32(d.col[0]) / 255.0
+	d.ray_front[i * 3 + 1] *= f32(d.col[1]) / 255.0
+	d.ray_front[i * 3 + 2] *= f32(d.col[2]) / 255.0
+}
+
+Front_Assemble_Data :: struct {
+	front:  []f32,
+	dens:   []f32,
+	absorb: [3]f32,
+}
+
+front_assemble_task :: proc(data: rawptr, i: int) {
+	d := cast(^Front_Assemble_Data)data
+	dd := d.dens[i]
+	d.front[i * 3 + 0] *= 1.0 - d.absorb[0] + d.absorb[0] * dd
+	d.front[i * 3 + 1] *= 1.0 - d.absorb[1] + d.absorb[1] * dd
+	d.front[i * 3 + 2] *= 1.0 - d.absorb[2] + d.absorb[2] * dd
+}
+
+Hdr_Data :: struct {
+	front:     []f32,
+	front_hdr: []f32,
+}
+
+hdr_task :: proc(data: rawptr, i: int) {
+	d := cast(^Hdr_Data)data
+	x := clamp(d.front[i], 0.0, 1.0 - EPS)
+	d.front_hdr[i] = clamp(inverse_reinhard(x), 0.0, 3.0)
+}
+
+Final_Data :: struct {
+	front:     []f32,
+	bounced:   []f32,
+	final:     []f32,
+	back_refl: f32,
+}
+
+final_task :: proc(data: rawptr, i: int) {
+	d := cast(^Final_Data)data
+	d.final[i] = clamp(d.front[i] + d.bounced[i] * d.back_refl, 0.0, 1.0)
+}
+
+Out8_Data :: struct {
+	final:    []f32,
+	out8:     []u8,
+	gamma:    f32,
+	exposure: f32,
+	contrast: f32,
+}
+
+out8_task :: proc(data: rawptr, i: int) {
+	d := cast(^Out8_Data)data
+	v := linear_to_srgb(d.final[i], d.gamma)
+	v = clamp((v - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	d.out8[i] = u8(clamp(255.0 * v, 0.0, 255.0))
+}
+
 BLUE :: "\x1b[38;2;138;173;244m"
 GREEN :: "\x1b[38;2;166;218;149m"
 YELLOW :: "\x1b[38;2;238;212;159m"
@@ -249,11 +355,7 @@ main :: proc() {
 	n := w_sim * h_sim
 	ray_front := make([]f32, n * 3)
 	defer delete(ray_front)
-	for i in 0 ..< n {
-		ray_front[i * 3 + 0] = srgb_to_linear(f32(resized[i * 3 + 0]), opts.gamma)
-		ray_front[i * 3 + 1] = srgb_to_linear(f32(resized[i * 3 + 1]), opts.gamma)
-		ray_front[i * 3 + 2] = srgb_to_linear(f32(resized[i * 3 + 2]), opts.gamma)
-	}
+	parallel_for(n, &Lin_Data{ray_front = ray_front, resized = resized, gamma = opts.gamma}, lin_task)
 	t = stage_time("缩放与线性化", t)
 
 	ctx: Compute_Context
@@ -292,13 +394,7 @@ main :: proc() {
 				emu.sigma_filter = opts.sigma_filter
 			}
 			absorb, expo_w := build_vectors(emu.dye)
-			for i in 0 ..< n {
-				lum :=
-					ray_front[i * 3] * expo_w[0] +
-					ray_front[i * 3 + 1] * expo_w[1] +
-					ray_front[i * 3 + 2] * expo_w[2]
-				src[i] = 1.0 - clamp(lum, 0.0, 1.0)
-			}
+			parallel_for(n, &Src_Data{ray_front = ray_front, src = src, expo_w = expo_w}, src_task)
 			ss := f32(opts.supersample)
 			r_px := emu.grain_radius * ss
 			sig_px := emu.grain_sigma * ss
@@ -369,20 +465,11 @@ main :: proc() {
 			append(&layer_dens, dens)
 			append(&layer_depths, current_z)
 			current_z += 1
-			for i in 0 ..< n {
-				d := neg[i]
-				ray_front[i * 3 + 0] *= 1.0 - absorb[0] * (1.0 - d)
-				ray_front[i * 3 + 1] *= 1.0 - absorb[1] * (1.0 - d)
-				ray_front[i * 3 + 2] *= 1.0 - absorb[2] * (1.0 - d)
-			}
+			parallel_for(n, &Front_Update_Data{neg = neg, ray_front = ray_front, absorb = absorb}, front_update_task)
 		case .Filter:
 			col := cfg.filters[item.index].color
 			info(fmt.tprintf("[filter %d] colour=[%d, %d, %d]", idx, col[0], col[1], col[2]))
-			for i in 0 ..< n {
-				ray_front[i * 3 + 0] *= f32(col[0]) / 255.0
-				ray_front[i * 3 + 1] *= f32(col[1]) / 255.0
-				ray_front[i * 3 + 2] *= f32(col[2]) / 255.0
-			}
+			parallel_for(n, &Filter_Data{ray_front = ray_front, col = col}, filter_task)
 		case .Film_Base:
 			info(fmt.tprintf("[base] thickness=%.1f", film_thick))
 		case .Back:
@@ -398,12 +485,7 @@ main :: proc() {
 	for l in 0 ..< len(layer_dens) {
 		absorb := layer_absorbs[l]
 		dens := layer_dens[l]
-		for i in 0 ..< n {
-			d := dens[i]
-			front[i * 3 + 0] *= 1.0 - absorb[0] + absorb[0] * d
-			front[i * 3 + 1] *= 1.0 - absorb[1] + absorb[1] * d
-			front[i * 3 + 2] *= 1.0 - absorb[2] + absorb[2] * d
-		}
+		parallel_for(n, &Front_Assemble_Data{front = front, dens = dens, absorb = absorb}, front_assemble_task)
 	}
 	t = stage_time("front 组装", t)
 
@@ -412,10 +494,7 @@ main :: proc() {
 	if back_refl > EPS {
 		front_hdr := make([]f32, n * 3)
 		defer delete(front_hdr)
-		for i in 0 ..< n * 3 {
-			x := clamp(front[i], 0.0, 1.0 - EPS)
-			front_hdr[i] = clamp(inverse_reinhard(x), 0.0, 3.0)
-		}
+		parallel_for(n * 3, &Hdr_Data{front = front, front_hdr = front_hdr}, hdr_task)
 		n_layers := len(layer_dens)
 		depth := make([]f32, n_layers)
 		defer delete(depth)
@@ -461,20 +540,14 @@ main :: proc() {
 		}
 		t = stage_time("halation GPU 回弹", t)
 		final = make([]f32, n * 3)
-		for i in 0 ..< n * 3 {
-			final[i] = clamp(front[i] + bounced[i] * back_refl, 0.0, 1.0)
-		}
+		parallel_for(n * 3, &Final_Data{front = front, bounced = bounced, final = final, back_refl = back_refl}, final_task)
 	}
 	success("仿真完成")
 	t = stage_time("合成与输出", t)
 
 	out8 := make([]u8, n * 3)
 	defer delete(out8)
-	for i in 0 ..< n * 3 {
-		v := linear_to_srgb(final[i], opts.gamma)
-		v = clamp((v - 0.5 + opts.exposure * 0.5) * opts.contrast + 0.5, 0.0, 1.0)
-		out8[i] = u8(clamp(255.0 * v, 0.0, 255.0))
-	}
+	parallel_for(n * 3, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast}, out8_task)
 
 	out_w := w_sim
 	out_h := h_sim

@@ -12,6 +12,7 @@
 
 	// .globl	render_kernel
 // _ZZ10sum_kernelE5sdata has been demoted
+// _ZZ16sum_final_kernelE5sdata has been demoted
 
 .visible .entry render_kernel(
 	.param .u64 render_kernel_param_0,
@@ -1203,120 +1204,120 @@ $L__BB5_2:
 )
 {
 	.reg .pred 	%p<12>;
-	.reg .f32 	%f<35>;
+	.reg .f32 	%f<34>;
 	.reg .b32 	%r<14>;
-	.reg .b64 	%rd<7>;
+	.reg .b64 	%rd<9>;
 	// demoted variable
 	.shared .align 4 .b8 _ZZ10sum_kernelE5sdata[1024];
 
 	ld.param.u64 	%rd2, [sum_kernel_param_0];
 	ld.param.u64 	%rd3, [sum_kernel_param_1];
-	ld.param.u32 	%r8, [sum_kernel_param_2];
+	ld.param.u32 	%r9, [sum_kernel_param_2];
 	mov.u32 	%r1, %ntid.x;
-	mov.u32 	%r9, %ctaid.x;
-	mov.u32 	%r2, %tid.x;
-	mad.lo.s32 	%r13, %r9, %r1, %r2;
-	setp.ge.u32 	%p1, %r13, %r8;
-	mov.f32 	%f34, 0f00000000;
+	mov.u32 	%r2, %ctaid.x;
+	mov.u32 	%r3, %tid.x;
+	mad.lo.s32 	%r13, %r2, %r1, %r3;
+	setp.ge.u32 	%p1, %r13, %r9;
+	mov.f32 	%f33, 0f00000000;
 	@%p1 bra 	$L__BB6_3;
 
 	mov.u32 	%r10, %nctaid.x;
-	mul.lo.s32 	%r4, %r10, %r1;
+	mul.lo.s32 	%r5, %r10, %r1;
 	cvta.to.global.u64 	%rd1, %rd2;
-	mov.f32 	%f34, 0f00000000;
+	mov.f32 	%f33, 0f00000000;
 
 $L__BB6_2:
 	mul.wide.u32 	%rd4, %r13, 4;
 	add.s64 	%rd5, %rd1, %rd4;
 	ld.global.nc.f32 	%f6, [%rd5];
-	add.ftz.f32 	%f34, %f34, %f6;
-	add.s32 	%r13, %r13, %r4;
-	setp.lt.u32 	%p2, %r13, %r8;
+	add.ftz.f32 	%f33, %f33, %f6;
+	add.s32 	%r13, %r13, %r5;
+	setp.lt.u32 	%p2, %r13, %r9;
 	@%p2 bra 	$L__BB6_2;
 
 $L__BB6_3:
-	shl.b32 	%r11, %r2, 2;
+	shl.b32 	%r11, %r3, 2;
 	mov.u32 	%r12, _ZZ10sum_kernelE5sdata;
-	add.s32 	%r7, %r12, %r11;
-	st.shared.f32 	[%r7], %f34;
+	add.s32 	%r8, %r12, %r11;
+	st.shared.f32 	[%r8], %f33;
 	bar.sync 	0;
-	setp.gt.u32 	%p3, %r2, 127;
+	setp.gt.u32 	%p3, %r3, 127;
 	@%p3 bra 	$L__BB6_5;
 
-	ld.shared.f32 	%f7, [%r7];
-	ld.shared.f32 	%f8, [%r7+512];
+	ld.shared.f32 	%f7, [%r8];
+	ld.shared.f32 	%f8, [%r8+512];
 	add.ftz.f32 	%f9, %f8, %f7;
-	st.shared.f32 	[%r7], %f9;
+	st.shared.f32 	[%r8], %f9;
 
 $L__BB6_5:
 	bar.sync 	0;
-	setp.gt.u32 	%p4, %r2, 63;
+	setp.gt.u32 	%p4, %r3, 63;
 	@%p4 bra 	$L__BB6_7;
 
-	ld.shared.f32 	%f10, [%r7];
-	ld.shared.f32 	%f11, [%r7+256];
+	ld.shared.f32 	%f10, [%r8];
+	ld.shared.f32 	%f11, [%r8+256];
 	add.ftz.f32 	%f12, %f11, %f10;
-	st.shared.f32 	[%r7], %f12;
+	st.shared.f32 	[%r8], %f12;
 
 $L__BB6_7:
 	bar.sync 	0;
-	setp.gt.u32 	%p5, %r2, 31;
+	setp.gt.u32 	%p5, %r3, 31;
 	@%p5 bra 	$L__BB6_9;
 
-	ld.shared.f32 	%f13, [%r7];
-	ld.shared.f32 	%f14, [%r7+128];
+	ld.shared.f32 	%f13, [%r8];
+	ld.shared.f32 	%f14, [%r8+128];
 	add.ftz.f32 	%f15, %f14, %f13;
-	st.shared.f32 	[%r7], %f15;
+	st.shared.f32 	[%r8], %f15;
 
 $L__BB6_9:
 	bar.sync 	0;
-	setp.gt.u32 	%p6, %r2, 15;
+	setp.gt.u32 	%p6, %r3, 15;
 	@%p6 bra 	$L__BB6_11;
 
-	ld.shared.f32 	%f16, [%r7];
-	ld.shared.f32 	%f17, [%r7+64];
+	ld.shared.f32 	%f16, [%r8];
+	ld.shared.f32 	%f17, [%r8+64];
 	add.ftz.f32 	%f18, %f17, %f16;
-	st.shared.f32 	[%r7], %f18;
+	st.shared.f32 	[%r8], %f18;
 
 $L__BB6_11:
 	bar.sync 	0;
-	setp.gt.u32 	%p7, %r2, 7;
+	setp.gt.u32 	%p7, %r3, 7;
 	@%p7 bra 	$L__BB6_13;
 
-	ld.shared.f32 	%f19, [%r7];
-	ld.shared.f32 	%f20, [%r7+32];
+	ld.shared.f32 	%f19, [%r8];
+	ld.shared.f32 	%f20, [%r8+32];
 	add.ftz.f32 	%f21, %f20, %f19;
-	st.shared.f32 	[%r7], %f21;
+	st.shared.f32 	[%r8], %f21;
 
 $L__BB6_13:
 	bar.sync 	0;
-	setp.gt.u32 	%p8, %r2, 3;
+	setp.gt.u32 	%p8, %r3, 3;
 	@%p8 bra 	$L__BB6_15;
 
-	ld.shared.f32 	%f22, [%r7];
-	ld.shared.f32 	%f23, [%r7+16];
+	ld.shared.f32 	%f22, [%r8];
+	ld.shared.f32 	%f23, [%r8+16];
 	add.ftz.f32 	%f24, %f23, %f22;
-	st.shared.f32 	[%r7], %f24;
+	st.shared.f32 	[%r8], %f24;
 
 $L__BB6_15:
 	bar.sync 	0;
-	setp.gt.u32 	%p9, %r2, 1;
+	setp.gt.u32 	%p9, %r3, 1;
 	@%p9 bra 	$L__BB6_17;
 
-	ld.shared.f32 	%f25, [%r7];
-	ld.shared.f32 	%f26, [%r7+8];
+	ld.shared.f32 	%f25, [%r8];
+	ld.shared.f32 	%f26, [%r8+8];
 	add.ftz.f32 	%f27, %f26, %f25;
-	st.shared.f32 	[%r7], %f27;
+	st.shared.f32 	[%r8], %f27;
 
 $L__BB6_17:
 	bar.sync 	0;
-	setp.ne.s32 	%p10, %r2, 0;
+	setp.ne.s32 	%p10, %r3, 0;
 	@%p10 bra 	$L__BB6_19;
 
 	ld.shared.f32 	%f28, [_ZZ10sum_kernelE5sdata+4];
-	ld.shared.f32 	%f29, [%r7];
+	ld.shared.f32 	%f29, [%r8];
 	add.ftz.f32 	%f30, %f28, %f29;
-	st.shared.f32 	[%r7], %f30;
+	st.shared.f32 	[%r8], %f30;
 
 $L__BB6_19:
 	bar.sync 	0;
@@ -1324,9 +1325,142 @@ $L__BB6_19:
 
 	ld.shared.f32 	%f31, [_ZZ10sum_kernelE5sdata];
 	cvta.to.global.u64 	%rd6, %rd3;
-	atom.global.add.f32 	%f32, [%rd6], %f31;
+	mul.wide.u32 	%rd7, %r2, 4;
+	add.s64 	%rd8, %rd6, %rd7;
+	st.global.f32 	[%rd8], %f31;
 
 $L__BB6_21:
+	ret;
+
+}
+	// .globl	sum_final_kernel
+.visible .entry sum_final_kernel(
+	.param .u64 sum_final_kernel_param_0,
+	.param .u64 sum_final_kernel_param_1,
+	.param .u32 sum_final_kernel_param_2
+)
+{
+	.reg .pred 	%p<12>;
+	.reg .f32 	%f<34>;
+	.reg .b32 	%r<9>;
+	.reg .b64 	%rd<7>;
+	// demoted variable
+	.shared .align 4 .b8 _ZZ16sum_final_kernelE5sdata[1024];
+
+	ld.param.u64 	%rd2, [sum_final_kernel_param_0];
+	ld.param.u64 	%rd3, [sum_final_kernel_param_1];
+	ld.param.u32 	%r5, [sum_final_kernel_param_2];
+	mov.u32 	%r1, %tid.x;
+	setp.ge.u32 	%p1, %r1, %r5;
+	mov.f32 	%f33, 0f00000000;
+	@%p1 bra 	$L__BB7_3;
+
+	cvta.to.global.u64 	%rd1, %rd2;
+	mov.f32 	%f33, 0f00000000;
+	mov.u32 	%r8, %r1;
+
+$L__BB7_2:
+	mul.wide.u32 	%rd4, %r8, 4;
+	add.s64 	%rd5, %rd1, %rd4;
+	ld.global.nc.f32 	%f6, [%rd5];
+	add.ftz.f32 	%f33, %f33, %f6;
+	add.s32 	%r8, %r8, 256;
+	setp.lt.u32 	%p2, %r8, %r5;
+	@%p2 bra 	$L__BB7_2;
+
+$L__BB7_3:
+	shl.b32 	%r6, %r1, 2;
+	mov.u32 	%r7, _ZZ16sum_final_kernelE5sdata;
+	add.s32 	%r4, %r7, %r6;
+	st.shared.f32 	[%r4], %f33;
+	bar.sync 	0;
+	setp.gt.u32 	%p3, %r1, 127;
+	@%p3 bra 	$L__BB7_5;
+
+	ld.shared.f32 	%f7, [%r4];
+	ld.shared.f32 	%f8, [%r4+512];
+	add.ftz.f32 	%f9, %f8, %f7;
+	st.shared.f32 	[%r4], %f9;
+
+$L__BB7_5:
+	bar.sync 	0;
+	setp.gt.u32 	%p4, %r1, 63;
+	@%p4 bra 	$L__BB7_7;
+
+	ld.shared.f32 	%f10, [%r4];
+	ld.shared.f32 	%f11, [%r4+256];
+	add.ftz.f32 	%f12, %f11, %f10;
+	st.shared.f32 	[%r4], %f12;
+
+$L__BB7_7:
+	bar.sync 	0;
+	setp.gt.u32 	%p5, %r1, 31;
+	@%p5 bra 	$L__BB7_9;
+
+	ld.shared.f32 	%f13, [%r4];
+	ld.shared.f32 	%f14, [%r4+128];
+	add.ftz.f32 	%f15, %f14, %f13;
+	st.shared.f32 	[%r4], %f15;
+
+$L__BB7_9:
+	bar.sync 	0;
+	setp.gt.u32 	%p6, %r1, 15;
+	@%p6 bra 	$L__BB7_11;
+
+	ld.shared.f32 	%f16, [%r4];
+	ld.shared.f32 	%f17, [%r4+64];
+	add.ftz.f32 	%f18, %f17, %f16;
+	st.shared.f32 	[%r4], %f18;
+
+$L__BB7_11:
+	bar.sync 	0;
+	setp.gt.u32 	%p7, %r1, 7;
+	@%p7 bra 	$L__BB7_13;
+
+	ld.shared.f32 	%f19, [%r4];
+	ld.shared.f32 	%f20, [%r4+32];
+	add.ftz.f32 	%f21, %f20, %f19;
+	st.shared.f32 	[%r4], %f21;
+
+$L__BB7_13:
+	bar.sync 	0;
+	setp.gt.u32 	%p8, %r1, 3;
+	@%p8 bra 	$L__BB7_15;
+
+	ld.shared.f32 	%f22, [%r4];
+	ld.shared.f32 	%f23, [%r4+16];
+	add.ftz.f32 	%f24, %f23, %f22;
+	st.shared.f32 	[%r4], %f24;
+
+$L__BB7_15:
+	bar.sync 	0;
+	setp.gt.u32 	%p9, %r1, 1;
+	@%p9 bra 	$L__BB7_17;
+
+	ld.shared.f32 	%f25, [%r4];
+	ld.shared.f32 	%f26, [%r4+8];
+	add.ftz.f32 	%f27, %f26, %f25;
+	st.shared.f32 	[%r4], %f27;
+
+$L__BB7_17:
+	bar.sync 	0;
+	setp.ne.s32 	%p10, %r1, 0;
+	@%p10 bra 	$L__BB7_19;
+
+	ld.shared.f32 	%f28, [_ZZ16sum_final_kernelE5sdata+4];
+	ld.shared.f32 	%f29, [%r4];
+	add.ftz.f32 	%f30, %f28, %f29;
+	st.shared.f32 	[%r4], %f30;
+
+$L__BB7_19:
+	bar.sync 	0;
+	@%p10 bra 	$L__BB7_21;
+
+	ld.shared.f32 	%f31, [_ZZ16sum_final_kernelE5sdata];
+	cvta.to.global.u64 	%rd6, %rd3;
+	st.global.f32 	[%rd6], %f31;
+
+$L__BB7_21:
 	ret;
 
 }
@@ -1355,7 +1489,7 @@ $L__BB6_21:
 	mov.u32 	%r5, %tid.x;
 	mad.lo.s32 	%r1, %r3, %r4, %r5;
 	setp.ge.u32 	%p1, %r1, %r2;
-	@%p1 bra 	$L__BB7_2;
+	@%p1 bra 	$L__BB8_2;
 
 	cvta.to.global.u64 	%rd5, %rd3;
 	cvta.to.global.u64 	%rd6, %rd1;
@@ -1375,7 +1509,7 @@ $L__BB6_21:
 	add.s64 	%rd13, %rd12, %rd7;
 	st.global.f32 	[%rd13], %f7;
 
-$L__BB7_2:
+$L__BB8_2:
 	ret;
 
 }

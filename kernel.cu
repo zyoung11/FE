@@ -274,7 +274,27 @@ __global__ void sum_kernel(const float* __restrict__ src, float* __restrict__ ou
 		__syncthreads();
 	}
 	if (tid == 0u) {
-		atomicAdd(out, sdata[0]);
+		out[blockIdx.x] = sdata[0];
+	}
+}
+
+__global__ void sum_final_kernel(const float* __restrict__ partials, float* __restrict__ out, unsigned nblocks) {
+	__shared__ float sdata[256];
+	unsigned tid = threadIdx.x;
+	float acc = 0.0f;
+	for (unsigned i = tid; i < nblocks; i += 256u) {
+		acc += partials[i];
+	}
+	sdata[tid] = acc;
+	__syncthreads();
+	for (unsigned s = 128u; s > 0u; s >>= 1) {
+		if (tid < s) {
+			sdata[tid] += sdata[tid + s];
+		}
+		__syncthreads();
+	}
+	if (tid == 0u) {
+		out[0] = sdata[0];
 	}
 }
 

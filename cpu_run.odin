@@ -8,6 +8,51 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 
+Par_Task :: struct {
+	f:     proc(data: rawptr, i: int),
+	data:  rawptr,
+	start: int,
+	end:   int,
+}
+
+par_task_run :: proc(task: thread.Task) {
+	t := cast(^Par_Task)task.data
+	for i in t.start ..< t.end {
+		t.f(t.data, i)
+	}
+}
+
+parallel_for :: proc(n: int, data: rawptr, f: proc(data: rawptr, i: int)) {
+	if n <= 0 {
+		return
+	}
+	n_threads := cpu_thread_count()
+	if n_threads <= 1 {
+		for i in 0 ..< n {
+			f(data, i)
+		}
+		return
+	}
+	blocks := n_threads * 4
+	pool: thread.Pool
+	thread.pool_init(&pool, context.allocator, n_threads)
+	defer thread.pool_destroy(&pool)
+	thread.pool_start(&pool)
+	band := (n + blocks - 1) / blocks
+	tasks := make([]Par_Task, blocks)
+	defer delete(tasks)
+	for b in 0 ..< blocks {
+		s := b * band
+		if s >= n {
+			break
+		}
+		e := min(s + band, n)
+		tasks[b] = Par_Task{f = f, data = data, start = s, end = e}
+		thread.pool_add_task(&pool, context.allocator, par_task_run, &tasks[b])
+	}
+	thread.pool_finish(&pool)
+}
+
 Render_Params :: struct {
 	width:      u32,
 	height:     u32,

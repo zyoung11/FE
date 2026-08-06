@@ -55,6 +55,7 @@ Cuda_Context :: struct {
 	gauss_v_fn:  CUfunction,
 	tmap_fn:     CUfunction,
 	sum_fn:      CUfunction,
+	sum_final_fn: CUfunction,
 	blend_fn:    CUfunction,
 	d_src:       CUdeviceptr,
 	d_neg:       CUdeviceptr,
@@ -185,6 +186,7 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_module_get_function(&c.gauss_v_fn, c.module, "gauss_v_kernel") != 0 ||
 	   cu_module_get_function(&c.tmap_fn, c.module, "tmap_kernel") != 0 ||
 	   cu_module_get_function(&c.sum_fn, c.module, "sum_kernel") != 0 ||
+	   cu_module_get_function(&c.sum_final_fn, c.module, "sum_final_kernel") != 0 ||
 	   cu_module_get_function(&c.blend_fn, c.module, "blend_kernel") != 0 {
 		warn("CUDA 内核查找失败，回退 CPU")
 		return false
@@ -205,7 +207,7 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_mem_alloc(&c.d_lap, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_blur_min, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_blur_max, img_size) != 0 ||
-	   cu_mem_alloc(&c.d_sum, 4) != 0 ||
+	   cu_mem_alloc(&c.d_sum, u64((w * h + 255) / 256) * 4 + 4) != 0 ||
 	   cu_mem_alloc(&c.d_blur_kernel, 256) != 0 {
 		warn("CUDA 显存分配失败，回退 CPU")
 		cuda_cleanup(c)
@@ -449,8 +451,21 @@ cuda_adaptive_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma_m
 		fail(fmt.tprintf("cuMemsetD32: %s", cuda_error_string(res)))
 		return nil, false
 	}
+	blocks := (n + 255) / 256
 	args2 := [3]rawptr{&c.d_lap, &c.d_sum, &n}
 	if !cuda_launch_1d(c, c.sum_fn, n, &args2[0]) {
+		return nil, false
+	}
+	sf_args := [3]rawptr{&c.d_sum, &c.d_sum, &blocks}
+	if res := cu_launch_kernel(
+		c.sum_final_fn,
+		1, 1, 1,
+		256, 1, 1,
+		0, nil,
+		&sf_args[0], nil,
+	); res != 0 {
+		cu_ctx_synchronize()
+		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
 		return nil, false
 	}
 	mean_host: f32
