@@ -200,4 +200,88 @@ __global__ void bounce_kernel(
 	bounced[obase + 2] = acc[2] * inv;
 }
 
+__global__ void lap_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h) {
+	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= w || y >= h) {
+		return;
+	}
+	unsigned i = y * w + x;
+	if (x == 0u || y == 0u || x == w - 1u || y == h - 1u) {
+		dst[i] = 0.0f;
+		return;
+	}
+	dst[i] = fabsf(4.0f * src[i] - src[i - w] - src[i + w] - src[i - 1] - src[i + 1]);
+}
+
+__global__ void gauss_h_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h, const float* __restrict__ kernel, int r) {
+	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= w || y >= h) {
+		return;
+	}
+	float acc = 0.0f;
+	for (int j = 0; j <= 2 * r; j++) {
+		int sx = (int)x + j - r;
+		if (sx >= 0 && sx < (int)w) {
+			acc += src[y * w + (unsigned)sx] * kernel[j];
+		}
+	}
+	dst[y * w + x] = acc;
+}
+
+__global__ void gauss_v_kernel(const float* __restrict__ src, float* __restrict__ dst, unsigned w, unsigned h, const float* __restrict__ kernel, int r) {
+	unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= w || y >= h) {
+		return;
+	}
+	float acc = 0.0f;
+	for (int j = 0; j <= 2 * r; j++) {
+		int sy = (int)y + j - r;
+		if (sy >= 0 && sy < (int)h) {
+			acc += src[(unsigned)sy * w + x] * kernel[j];
+		}
+	}
+	dst[y * w + x] = acc;
+}
+
+__global__ void tmap_kernel(const float* __restrict__ energy, float* __restrict__ t, float mean, unsigned n) {
+	unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= n) {
+		return;
+	}
+	float v = energy[i] / (2.0f * mean + 1e-6f);
+	t[i] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+__global__ void sum_kernel(const float* __restrict__ src, float* __restrict__ out, unsigned n) {
+	__shared__ float sdata[256];
+	unsigned tid = threadIdx.x;
+	unsigned stride = gridDim.x * blockDim.x;
+	float acc = 0.0f;
+	for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += stride) {
+		acc += src[i];
+	}
+	sdata[tid] = acc;
+	__syncthreads();
+	for (unsigned s = 128u; s > 0u; s >>= 1) {
+		if (tid < s) {
+			sdata[tid] += sdata[tid + s];
+		}
+		__syncthreads();
+	}
+	if (tid == 0u) {
+		atomicAdd(out, sdata[0]);
+	}
+}
+
+__global__ void blend_kernel(const float* __restrict__ a, const float* __restrict__ b, const float* __restrict__ t, float* __restrict__ dst, unsigned n) {
+	unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= n) {
+		return;
+	}
+	dst[i] = a[i] * (1.0f - t[i]) + b[i] * t[i];
+}
+
 } // extern "C"

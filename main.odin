@@ -314,12 +314,20 @@ main :: proc() {
 			}
 			if mtf_max == nil || mtf_max.? <= mtf.? {
 				if sigma_mtf > 0 {
-					blurred := gauss_blur(src, w_sim, h_sim, sigma_mtf)
+					blurred, ok := gauss_blur_dispatch(&ctx, src, w_sim, h_sim, sigma_mtf)
+					if !ok {
+						fail("高斯模糊失败")
+						os.exit(1)
+					}
 					defer delete(blurred)
 					copy(src, blurred)
 				}
 			} else if sigma_mtf > 0 {
-				blurred := adaptive_blur(src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
+				blurred, ok := adaptive_blur_dispatch(&ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
+				if !ok {
+					fail("自适应模糊失败")
+					os.exit(1)
+				}
 				defer delete(blurred)
 				copy(src, blurred)
 			}

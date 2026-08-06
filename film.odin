@@ -252,3 +252,17 @@ gauss_blur :: proc(src: []f32, w: int, h: int, sigma: f32) -> []f32 {
     gauss_pass(tmp, out, kernel, w, h, r, true)
     return out
 }
+
+gauss_blur_dispatch :: proc(ctx: ^Compute_Context, src: []f32, w: int, h: int, sigma: f32) -> ([]f32, bool) {
+    if ctx.mode == .Cuda {
+        return cuda_gauss_blur(&ctx.cuda, src, u32(w), u32(h), sigma)
+    }
+    return gauss_blur(src, w, h, sigma), true
+}
+
+adaptive_blur_dispatch :: proc(ctx: ^Compute_Context, src: []f32, w: int, h: int, sigma_min: f32, sigma_max: f32) -> ([]f32, bool) {
+    if ctx.mode == .Cuda {
+        return cuda_adaptive_blur(&ctx.cuda, src, u32(w), u32(h), sigma_min, sigma_max)
+    }
+    return adaptive_blur(src, w, h, sigma_min, sigma_max), true
+}
