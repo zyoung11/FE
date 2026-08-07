@@ -158,6 +158,18 @@ front_assemble_task :: proc(data: rawptr, i: int) {
 	d.front[i * 3 + 2] *= 1.0 - d.absorb[2] + d.absorb[2] * dd
 }
 
+Min_Data :: struct {
+	front:  []f32,
+	smooth: []f32,
+}
+
+min_task :: proc(data: rawptr, i: int) {
+	d := cast(^Min_Data)data
+	if d.smooth[i] < d.front[i] {
+		d.front[i] = d.smooth[i]
+	}
+}
+
 Hdr_Data :: struct {
 	front:     []f32,
 	front_hdr: []f32,
@@ -203,6 +215,11 @@ out8_task :: proc(data: rawptr, i: int) {
 	r = clamp((r - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
 	g = clamp((g - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
 	b = clamp((b - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	luma := 0.2126 * r + 0.7152 * g + 0.0722 * b
+	sat_w := 1.0 - d.sat_lo * (1.0 - luma) * (1.0 - luma) - d.sat_hi * luma * luma
+	r = luma + (r - luma) * sat_w
+	g = luma + (g - luma) * sat_w
+	b = luma + (b - luma) * sat_w
 	if d.film > 0 {
 		luma := 0.2126 * r + 0.7152 * g + 0.0722 * b
 		y := filmic_curve(luma, d.film)
@@ -735,14 +752,25 @@ render_frame :: proc(
 
 	front := make([]f32, n * 3)
 	defer delete(front)
+	front_smooth := make([]f32, n * 3)
+	defer delete(front_smooth)
 	for i in 0 ..< n * 3 {
 		front[i] = 1.0
+		front_smooth[i] = 1.0
 	}
 	for l in 0 ..< len(layer_dens) {
 		absorb := layer_absorbs[l]
 		dens := layer_dens[l]
 		parallel_for(n, &Front_Assemble_Data{front = front, dens = dens, absorb = absorb}, front_assemble_task)
+		dens_smooth, ok := gauss_blur_dispatch(ctx, dens, w_sim, h_sim, GRAIN_SMOOTH_SIGMA)
+		if !ok {
+			fail("颗粒平滑模糊失败")
+			return nil, 0, 0, false
+		}
+		defer delete(dens_smooth)
+		parallel_for(n, &Front_Assemble_Data{front = front_smooth, dens = dens_smooth, absorb = absorb}, front_assemble_task)
 	}
+	parallel_for(n * 3, &Min_Data{front = front, smooth = front_smooth}, min_task)
 	t^ = stage_time("front 组装", t^, verbose)
 
 	final := front
