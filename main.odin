@@ -182,20 +182,45 @@ final_task :: proc(data: rawptr, i: int) {
 }
 
 Out8_Data :: struct {
-	final:    []f32,
-	out8:     []u8,
-	gamma:    f32,
-	exposure: f32,
-	contrast: f32,
-	film:     f32,
+	final:         []f32,
+	out8:          []u8,
+	gamma:         f32,
+	exposure:      f32,
+	contrast:      f32,
+	film:          f32,
+	print_toe:     f32,
+	print_shoulder: f32,
+	sat_lo:         f32,
+	sat_hi:         f32,
+	cross:          f32,
 }
 
 out8_task :: proc(data: rawptr, i: int) {
 	d := cast(^Out8_Data)data
-	v := linear_to_srgb(d.final[i], d.gamma)
-	v = clamp((v - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
-	v = filmic_curve(v, d.film)
-	d.out8[i] = u8(clamp(255.0 * v, 0.0, 255.0))
+	r := linear_to_srgb(d.final[i * 3 + 0], d.gamma)
+	g := linear_to_srgb(d.final[i * 3 + 1], d.gamma)
+	b := linear_to_srgb(d.final[i * 3 + 2], d.gamma)
+	r = clamp((r - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	g = clamp((g - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	b = clamp((b - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
+	if d.film > 0 {
+		luma := 0.2126 * r + 0.7152 * g + 0.0722 * b
+		y := filmic_curve(luma, d.film)
+		tint := d.film * 0.04
+		r = y + (r - luma) + (y - luma) * tint
+		g = y + (g - luma)
+		b = y + (b - luma) - (y - luma) * tint * 0.8
+		cr := 1.0 - d.cross
+		rr := r * cr + (g + b) * d.cross * 0.5
+		gg := g * cr + (r + b) * d.cross * 0.5
+		bb := b * cr + (r + g) * d.cross * 0.5
+		r = rr
+		g = gg
+		b = bb
+	}
+	d.out8[i * 3 + 0] = u8(clamp(255.0 * r, 0.0, 255.0))
+	d.out8[i * 3 + 1] = u8(clamp(255.0 * g, 0.0, 255.0))
+	d.out8[i * 3 + 2] = u8(clamp(255.0 * b, 0.0, 255.0))
 }
 
 BLUE :: "\x1b[38;2;138;173;244m"
@@ -250,6 +275,11 @@ Options :: struct {
 	device:         string `usage:"渲染设备: auto(默认) | cpu | cuda | cuda:N"`,
 	video:          bool `usage:"视频模式 (输入为视频文件, 输出视频)"`,
 	film:           f32 `usage:"胶片 S 曲线强度 (0=关, 1=满, 视频默认 0.5)"`,
+	print_toe: f32 `usage:"印片趾部强度 (负值=auto)"`,
+	print_shoulder: f32 `usage:"印片肩部强度 (负值=auto)"`,
+	sat_lo:         f32 `usage:"暗部去饱和系数 (负值=auto)"`,
+	sat_hi:         f32 `usage:"高光去饱和系数 (负值=auto)"`,
+	cross:          f32 `usage:"色彩交叉系数 (负值=auto)"`,
 	bitrate:        int `usage:"视频平均码率 Mbps (默认 60)"`,
 	maxrate:        int `usage:"视频峰值码率 Mbps (默认 100)"`,
 }
@@ -278,6 +308,11 @@ main :: proc() {
 	opts.sigma_filter = -1.0
 	opts.seed = 12345
 	opts.device = "auto"
+	opts.print_toe = -1
+	opts.print_shoulder = -1
+	opts.sat_lo = -1
+	opts.sat_hi = -1
+	opts.cross = -1
 
 	unicode_args := parse_cmdline_wide(cast([^]u16)windows.GetCommandLineW())
 	defer {
@@ -331,8 +366,6 @@ main :: proc() {
 	if opts.auto {
 		if opts.supersample == 0 {opts.supersample = 2}
 		if opts.gamma == 0 {opts.gamma = 2.4}
-		if opts.exposure == 999.0 {opts.exposure = 0.08}
-		if opts.contrast == 0 {opts.contrast = 0.92}
 		if opts.reflectance < 0 {opts.reflectance = 0.03}
 		if opts.thickness < 0 {opts.thickness = 20.0}
 	} else {
@@ -435,7 +468,7 @@ setup_config :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bo
 		sf := auto_res.sigma_filter
 		gs := auto_res.grain_sigma
 		if for_video {
-			gr *= 2.5
+			gr *= 2.2
 			sf *= 4.0
 			gs *= 2.0
 		}
@@ -449,13 +482,35 @@ setup_config :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bo
 				auto_mtf *= 2.0
 			}
 		}
+		t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
+		avg, lo, hi := image_stats(pixels, w, h)
+		film_base: f32 = 0.5
+		if for_video {
+			film_base = 0.5
+		}
+		if opts.film == 0 {opts.film = film_base + 0.2 * t}
+		if opts.print_toe < 0 {opts.print_toe = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
+		if opts.print_shoulder < 0 {opts.print_shoulder = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
+		if opts.sat_lo < 0 {opts.sat_lo = 0.12 + 0.08 * (1.0 - avg)}
+		if opts.sat_hi < 0 {opts.sat_hi = 0.15 + 0.1 * t}
+		if opts.cross < 0 {opts.cross = 0.03}
+		if opts.exposure == 999.0 {
+			opts.exposure = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35)
+		}
+		if opts.contrast == 0 {
+			opts.contrast = clamp(1.15 - (hi - lo) * 0.3, 0.85, 1.15)
+		}
 		info(
 			fmt.tprintf(
-				"auto: 颗粒 R=%.3f SIG=%.3f F=%.3f MTF=%.3f",
+				"auto: 颗粒 R=%.3f SIG=%.3f F=%.3f MTF=%.3f 印片 T=%.2f S=%.2f EXP=%.3f CON=%.2f",
 				opts.grain_radius,
 				opts.grain_sigma,
 				opts.sigma_filter,
 				auto_mtf,
+				opts.print_toe,
+				opts.print_shoulder,
+				opts.exposure,
+				opts.contrast,
 			),
 		)
 	}
@@ -753,7 +808,17 @@ render_frame :: proc(
 	t^ = stage_time("合成与输出", t^, verbose)
 
 	out8 := make([]u8, n * 3)
-	parallel_for(n * 3, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast, film = opts.film}, out8_task)
+	pt := opts.print_toe
+	if pt < 0 {pt = 0.35}
+	ps := opts.print_shoulder
+	if ps < 0 {ps = 0.35}
+	sl := opts.sat_lo
+	if sl < 0 {sl = 0.15}
+	sh := opts.sat_hi
+	if sh < 0 {sh = 0.2}
+	cr := opts.cross
+	if cr < 0 {cr = 0.05}
+	parallel_for(n, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast, film = opts.film, print_toe = pt, print_shoulder = ps, sat_lo = sl, sat_hi = sh, cross = cr}, out8_task)
 	return out8, w_sim, h_sim, true
 }
 
@@ -842,7 +907,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	opts.supersample = 1
 	if opts.samples == 0 {opts.samples = 128}
 	if opts.bounce_samples == 0 {opts.bounce_samples = 128}
-	if opts.film == 0 {opts.film = 0.5}
+	if !opts.auto && opts.film == 0 {opts.film = 0.5}
 	if opts.bitrate <= 0 {opts.bitrate = 60}
 	if opts.maxrate <= 0 {opts.maxrate = 100}
 

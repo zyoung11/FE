@@ -193,11 +193,15 @@ render_band :: proc(task: thread.Task) {
 				iy := clamp(int(math.floor(yG)), 0, int(p.height) - 1)
 				u := clamp(band.src[iy * w + ix], 0.0, 1.0 - EPS)
 				lam := -p.lambda_fac * math.ln(1.0 - u)
+				decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
+				lam *= decay
+				r_scale := 1.0 / math.sqrt(decay)
+				max_r_eff := p.max_r * r_scale
 				exp_lam := math.exp(-lam)
-				min_x := int(math.floor((xG - p.max_r) / p.ag))
-				max_x := int(math.floor((xG + p.max_r) / p.ag))
-				min_y := int(math.floor((yG - p.max_r) / p.ag))
-				max_y := int(math.floor((yG + p.max_r) / p.ag))
+				min_x := int(math.floor((xG - max_r_eff) / p.ag))
+				max_x := int(math.floor((xG + max_r_eff) / p.ag))
+				min_y := int(math.floor((yG - max_r_eff) / p.ag))
+				max_y := int(math.floor((yG + max_r_eff) / p.ag))
 				covered := false
 				for cx := min_x; cx <= max_x && !covered; cx += 1 {
 					for cy := min_y; cy <= max_y && !covered; cy += 1 {

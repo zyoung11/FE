@@ -68,6 +68,56 @@ compute_auto :: proc(sharpness: f32, height: int) -> Auto_Result {
 	return Auto_Result{grain_radius = g, grain_sigma = 0.01, sigma_filter = 0.04, mtf_abs = m_mtf}
 }
 
+sample_luma :: proc(pixels: []u8, w: int, h: int) -> f32 {
+	sum: f32
+	n := 0
+	for y := 0; y < h; y += 16 {
+		for x := 0; x < w; x += 16 {
+			i := (y * w + x) * 3
+			sum += (0.299 * f32(pixels[i]) + 0.587 * f32(pixels[i + 1]) + 0.114 * f32(pixels[i + 2])) / 255.0
+			n += 1
+		}
+	}
+	return sum / f32(max(1, n))
+}
+
+image_stats :: proc(pixels: []u8, w: int, h: int) -> (avg: f32, lo: f32, hi: f32) {
+	hist: [256]int
+	sum: f32
+	n := 0
+	for y := 0; y < h; y += 16 {
+		for x := 0; x < w; x += 16 {
+			i := (y * w + x) * 3
+			l := u8(0.299 * f32(pixels[i]) + 0.587 * f32(pixels[i + 1]) + 0.114 * f32(pixels[i + 2]))
+			hist[l] += 1
+			sum += f32(l) / 255.0
+			n += 1
+		}
+	}
+	n = max(1, n)
+	avg = sum / f32(n)
+	cum := 0
+	for v in 0 ..< 256 {
+		cum += hist[v]
+		if cum * 100 >= n * 5 {
+			lo = f32(v) / 255.0
+			break
+		}
+	}
+	cum = 0
+	for v in 0 ..< 256 {
+		cum += hist[v]
+		if cum * 100 >= n * 95 {
+			hi = f32(v) / 255.0
+			break
+		}
+	}
+	if hi - lo < 0.1 {
+		hi = min(1.0, lo + 0.1)
+	}
+	return
+}
+
 build_cfg_text :: proc(
 	mode: string,
 	thickness: f32,

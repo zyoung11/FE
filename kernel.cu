@@ -94,12 +94,16 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		if (u < 0.0f) { u = 0.0f; }
 		if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
 		float lam = -p.lambda_fac * logf(1.0f - u);
+		float decay = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
+		lam *= decay;
+		float r_scale = 1.0f / sqrtf(decay);
+		float max_r_eff = p.max_r * r_scale;
 		float exp_lam = expf(-lam);
 
-		int min_x = (int)floorf((xG - p.max_r) / p.ag);
-		int max_x = (int)floorf((xG + p.max_r) / p.ag);
-		int min_y = (int)floorf((yG - p.max_r) / p.ag);
-		int max_y = (int)floorf((yG + p.max_r) / p.ag);
+		int min_x = (int)floorf((xG - max_r_eff) / p.ag);
+		int max_x = (int)floorf((xG + max_r_eff) / p.ag);
+		int min_y = (int)floorf((yG - max_r_eff) / p.ag);
+		int max_y = (int)floorf((yG + max_r_eff) / p.ag);
 
 		bool covered = false;
 		for (int cx = min_x; cx <= max_x && !covered; cx++) {
@@ -111,12 +115,13 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 					float rv = rnd01(&cs);
 					float xc = p.ag * ((float)cx + ru);
 					float yc = p.ag * ((float)cy + rv);
-					float gr2 = p.r2;
+					float gr2 = p.r2 * r_scale * r_scale;
 					if (p.sigma > 0.0f) {
 						float rgx, rgy;
 						rnd_gauss(&cs, &rgx, &rgy);
 						float rad = expf(p.mu_ln + p.sigma_ln * rgx);
 						if (rad > p.max_r) { rad = p.max_r; }
+						rad *= r_scale;
 						gr2 = rad * rad;
 					}
 					float dx = xc - xG;

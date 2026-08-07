@@ -144,6 +144,26 @@ filmic_curve :: proc(x: f32, strength: f32) -> f32 {
     return x * (1.0 - strength) + y * strength
 }
 
+print_curve :: proc(x: f32, toe: f32, shoulder: f32) -> f32 {
+    if x <= 0 {
+        return 0
+    }
+    if x >= 1 {
+        return 1
+    }
+    t := 0.25 * toe
+    s := 0.25 * shoulder
+    if x <= t {
+        return x * x / (2.0 * t)
+    }
+    if x >= 1.0 - s {
+        u := (1.0 - x) / s
+        return 1.0 - s * u * u / (2.0 * s)
+    }
+    k := (1.0 - s / 2.0 - t / 2.0) / (1.0 - s - t)
+    return t / 2.0 + k * (x - t)
+}
+
 build_vectors :: proc(dye: [3]u8) -> (absorb, expo_w: [3]f32) {
     comp := [3]f32 {
         1.0 - f32(dye[0]) / 255.0,
