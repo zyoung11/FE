@@ -691,7 +691,7 @@ Render_Worker :: struct {
 
 render_worker_main :: proc(t: ^thread.Thread) {
 	w := cast(^Render_Worker)t.data
-	if !sim_init(&w.ctx, w.w_sim, w.h_sim, w.n_layers, w.device) {
+	if !sim_init(&w.ctx, w.w_sim, w.h_sim, w.n_layers, w.device, w.idx == 0) {
 		fail("渲染 worker 初始化失败")
 		os.exit(1)
 	}
@@ -828,6 +828,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	pending: map[int][]u8
 	defer delete(pending)
 	n_encoded := 0
+	last_progress := 0
 	actual := 0
 	for f := 0; total < 0 || f < total; f += 1 {
 		if f > 0 {
@@ -852,7 +853,8 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 				os.exit(1)
 			}
 			n_encoded = next_seq
-			if n_encoded % 10 == 0 {
+			if n_encoded - last_progress >= 10 {
+				last_progress = n_encoded
 				elapsed := time.duration_seconds(time.since(start))
 				avg := f32(elapsed) / f32(max(1, n_encoded))
 				eta := avg * f32(max(0, actual - n_encoded))
@@ -871,7 +873,8 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 			os.exit(1)
 		}
 		n_encoded = next_seq
-		if n_encoded % 10 == 0 || next_seq == actual {
+		if n_encoded - last_progress >= 10 || next_seq == actual {
+			last_progress = n_encoded
 			elapsed := time.duration_seconds(time.since(start))
 			avg := f32(elapsed) / f32(max(1, n_encoded))
 			eta := avg * f32(max(0, actual - n_encoded))

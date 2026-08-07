@@ -114,7 +114,7 @@ cuda_load_symbols :: proc(lib: dynlib.Library) -> bool {
 	return true
 }
 
-cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: int) -> bool {
+cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: int, verbose := true) -> bool {
 	lib, ok := dynlib.load_library(CUDA_LIB, global_symbols = true)
 	if !ok {
 		warn(fmt.tprintf("未找到 %s", CUDA_LIB))
@@ -140,7 +140,7 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 			continue
 		}
 		name_buf: [256]u8
-		if cu_device_get_name(cstring(&name_buf[0]), 256, d) == 0 {
+		if cu_device_get_name(cstring(&name_buf[0]), 256, d) == 0 && verbose {
 			info(fmt.tprintf("CUDA 设备 %d: %s", i, string(cstring(&name_buf[0]))))
 		}
 	}
@@ -157,14 +157,18 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 		warn("cuDeviceGetName 失败")
 		return false
 	}
-	info(fmt.tprintf("GPU: %s", string(cstring(&name_buf[0]))))
+	if verbose {
+		info(fmt.tprintf("GPU: %s", string(cstring(&name_buf[0]))))
+	}
 
 	major, minor: i32
 	if cu_device_compute_capability(&major, &minor, c.dev) != 0 {
 		warn("cuDeviceComputeCapability 失败，回退 CPU")
 		return false
 	}
-	info(fmt.tprintf("CUDA 架构: %d.%d", major, minor))
+	if verbose {
+		info(fmt.tprintf("CUDA 架构: %d.%d", major, minor))
+	}
 	ptx_data := KERNEL_PTX_BASE
 	if major >= 12 {
 		ptx_data = KERNEL_PTX_120

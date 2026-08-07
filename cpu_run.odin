@@ -305,10 +305,10 @@ wait_progress :: proc(done: ^int, total: int, label: string) {
 	}
 }
 
-sim_init :: proc(ctx: ^Compute_Context, w: u32, h: u32, max_layers: u32, choice: Device_Choice) -> bool {
+sim_init :: proc(ctx: ^Compute_Context, w: u32, h: u32, max_layers: u32, choice: Device_Choice, verbose := true) -> bool {
 	switch choice.kind {
 	case .Cuda:
-		if cuda_init(&ctx.cuda, w, h, max_layers, choice.ordinal) {
+		if cuda_init(&ctx.cuda, w, h, max_layers, choice.ordinal, verbose) {
 			ctx.mode = .Cuda
 			return true
 		}
@@ -317,7 +317,7 @@ sim_init :: proc(ctx: ^Compute_Context, w: u32, h: u32, max_layers: u32, choice:
 	case .Cpu:
 		ctx.mode = .Cpu
 	case .Auto:
-		if cuda_init(&ctx.cuda, w, h, max_layers, 0) {
+		if cuda_init(&ctx.cuda, w, h, max_layers, 0, verbose) {
 			ctx.mode = .Cuda
 			return true
 		}
