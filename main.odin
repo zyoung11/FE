@@ -14,6 +14,82 @@ import "core:thread"
 import "core:time"
 import stb "vendor:stb/image"
 
+wstring_to_utf8_own :: proc(s: []u16) -> string {
+	n := 0
+	for i := 0; i < len(s); i += 1 {
+		c := s[i]
+		if c < 0x80 {
+			n += 1
+		} else if c < 0x800 {
+			n += 2
+		} else if c >= 0xD800 && c < 0xDC00 && i + 1 < len(s) && s[i + 1] >= 0xDC00 && s[i + 1] < 0xE000 {
+			n += 4
+			i += 1
+		} else {
+			n += 3
+		}
+	}
+	buf := make([]u8, n)
+	k := 0
+	for i := 0; i < len(s); i += 1 {
+		c := s[i]
+		if c < 0x80 {
+			buf[k] = u8(c)
+			k += 1
+		} else if c < 0x800 {
+			buf[k] = u8(0xC0 | (c >> 6))
+			buf[k + 1] = u8(0x80 | (c & 0x3F))
+			k += 2
+		} else if c >= 0xD800 && c < 0xDC00 && i + 1 < len(s) && s[i + 1] >= 0xDC00 && s[i + 1] < 0xE000 {
+			cp := u32(c - 0xD800) << 10 | u32(s[i + 1] - 0xDC00) + 0x10000
+			buf[k] = u8(0xF0 | (cp >> 18))
+			buf[k + 1] = u8(0x80 | ((cp >> 12) & 0x3F))
+			buf[k + 2] = u8(0x80 | ((cp >> 6) & 0x3F))
+			buf[k + 3] = u8(0x80 | (cp & 0x3F))
+			k += 4
+			i += 1
+		} else {
+			buf[k] = u8(0xE0 | (c >> 12))
+			buf[k + 1] = u8(0x80 | ((c >> 6) & 0x3F))
+			buf[k + 2] = u8(0x80 | (c & 0x3F))
+			k += 3
+		}
+	}
+	return string(buf)
+}
+
+parse_cmdline_wide :: proc(cmd: [^]u16) -> []string {
+	args := make([dynamic]string)
+	cur: [dynamic]u16
+	in_quotes := false
+	i := 0
+	for {
+		c := cmd[i]
+		if c == 0 {
+			break
+		}
+		if c == '"' {
+			in_quotes = !in_quotes
+			i += 1
+			continue
+		}
+		if (c == ' ' || c == '\t') && !in_quotes {
+			if len(cur) > 0 {
+				append(&args, wstring_to_utf8_own(cur[:]))
+				clear(&cur)
+			}
+			i += 1
+			continue
+		}
+		append(&cur, c)
+		i += 1
+	}
+	if len(cur) > 0 {
+		append(&args, wstring_to_utf8_own(cur[:]))
+	}
+	return args[:]
+}
+
 Lin_Data :: struct {
 	ray_front: []f32,
 	resized:   []u8,
@@ -131,6 +207,17 @@ RESET :: "\x1b[0m"
 info :: proc(msg: string) {fmt.printfln("%s[i]%s %s", BLUE, RESET, msg)}
 success :: proc(msg: string) {fmt.printfln("%s[+]%s %s", GREEN, RESET, msg)}
 warn :: proc(msg: string) {fmt.printfln("%s[!]%s %s", YELLOW, RESET, msg)}
+
+progress_line :: proc(n: int, total: int, start: time.Time) {
+	elapsed := f32(time.duration_seconds(time.since(start)))
+	avg := elapsed / f32(max(1, n))
+	if total > 0 {
+		eta := avg * f32(max(0, total - n))
+		fmt.printf("\r\x1b[2K%s[i]%s 帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", BLUE, RESET, n, total, avg, elapsed, eta)
+	} else {
+		fmt.printf("\r\x1b[2K%s[i]%s 帧 %d (%.2fs/帧, 已用 %.1fs)", BLUE, RESET, n, avg, elapsed)
+	}
+}
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
 
 stage_time :: proc(label: string, t0: time.Time, verbose := true) -> time.Time {
@@ -192,7 +279,14 @@ main :: proc() {
 	opts.seed = 12345
 	opts.device = "auto"
 
-	if err := flags.parse(&opts, os.args[1:], style = .Unix); err != nil {
+	unicode_args := parse_cmdline_wide(cast([^]u16)windows.GetCommandLineW())
+	defer {
+		for a in unicode_args {
+			delete(a)
+		}
+		delete(unicode_args)
+	}
+	if err := flags.parse(&opts, unicode_args[1:], style = .Unix); err != nil {
 		if _, is_help := err.(flags.Help_Request); is_help {
 			flags.write_usage(os.to_stream(os.stdout), Options, filepath.base(os.args[0]), .Unix)
 			os.exit(0)
@@ -623,6 +717,7 @@ render_frame :: proc(
 			absorb_stack[l * 3 + 2] = layer_absorbs[l][2]
 		}
 		bounced := make([]f32, n * 3)
+		defer delete(bounced)
 		if verbose {
 			info(fmt.tprintf("halation 回弹 %d 采样/像素 ...", opts.bounce_samples))
 		}
@@ -853,12 +948,9 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 				os.exit(1)
 			}
 			n_encoded = next_seq
-			if n_encoded - last_progress >= 10 {
+			if n_encoded - last_progress >= 5 {
 				last_progress = n_encoded
-				elapsed := time.duration_seconds(time.since(start))
-				avg := f32(elapsed) / f32(max(1, n_encoded))
-				eta := avg * f32(max(0, actual - n_encoded))
-				info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_encoded, actual, avg, elapsed, eta))
+				progress_line(n_encoded, vinfo.n_frames, start)
 			}
 		}
 	}
@@ -873,16 +965,14 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 			os.exit(1)
 		}
 		n_encoded = next_seq
-		if n_encoded - last_progress >= 10 || next_seq == actual {
+		if n_encoded - last_progress >= 5 || next_seq == actual {
 			last_progress = n_encoded
-			elapsed := time.duration_seconds(time.since(start))
-			avg := f32(elapsed) / f32(max(1, n_encoded))
-			eta := avg * f32(max(0, actual - n_encoded))
-			info(fmt.tprintf("帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", n_encoded, actual, avg, elapsed, eta))
+			progress_line(n_encoded, vinfo.n_frames, start)
 		}
 	}
 
 	video_in_finish(vin)
 	video_out_finish(vout)
+	fmt.println()
 	success(fmt.tprintf("视频处理完成: %d 帧, 总耗时 %s", n_encoded, time.since(start)))
 }
