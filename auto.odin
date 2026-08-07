@@ -63,9 +63,9 @@ content_sharpness :: proc(pixels: [^]u8, w: int, h: int) -> f32 {
 
 compute_auto :: proc(sharpness: f32, height: int) -> Auto_Result {
 	t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
-	g := 0.09 - 0.05 * t
+	g := (0.09 - 0.05 * t) / 10.0
 	m_mtf := min(1.8 - 0.8 * t, max(0.5, 0.0015 * f32(height)))
-	return Auto_Result{grain_radius = g, grain_sigma = 0.01, sigma_filter = 0.04, mtf_abs = m_mtf}
+	return Auto_Result{grain_radius = g, grain_sigma = 0.001, sigma_filter = 0.004, mtf_abs = m_mtf}
 }
 
 sample_luma :: proc(pixels: []u8, w: int, h: int) -> f32 {
