@@ -4,6 +4,12 @@ A physically-based film simulation renderer that converts photos and videos into
 
 Written in [Odin](https://odin-lang.org/), with CUDA acceleration via the driver API and optional CPU fallback.
 
+<p align="center">
+  <img src="input.jpg" width="49%" alt="Input"/>&nbsp;
+  <img src="output.jpg" width="49%" alt="Output"/>
+</p>
+<p align="center"><em>Input &rarr; Output (auto mode)</em></p>
+
 ---
 
 ## Features
