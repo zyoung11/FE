@@ -316,7 +316,7 @@ sim_init :: proc(ctx: ^Compute_Context, w: u32, h: u32, max_layers: u32, choice:
 			ctx.mode = .Cuda
 			return true
 		}
-		fail("CUDA 设备初始化失败")
+		fail("CUDA device initialization failed")
 		return false
 	case .Cpu:
 		ctx.mode = .Cpu
@@ -335,7 +335,7 @@ sim_init :: proc(ctx: ^Compute_Context, w: u32, h: u32, max_layers: u32, choice:
 		}
 	}
 	ctx.threads = n
-	info(fmt.tprintf("CPU 渲染器: %d 线程", n))
+	info(fmt.tprintf("CPU renderer: %d threads", n))
 	return true
 }
 
@@ -372,7 +372,7 @@ cpu_dispatch_render :: proc(ctx: ^Compute_Context, params: Render_Params, src: [
 		thread.pool_add_task(&ctx.pool, context.allocator, render_band, &bands[b])
 	}
 	if total > 8 {
-		wait_progress(&done, total, "渲染")
+		wait_progress(&done, total, "Render")
 	}
 	thread.pool_finish(&ctx.pool)
 	return true
@@ -414,7 +414,7 @@ cpu_dispatch_bounce :: proc(
 		thread.pool_add_task(&ctx.pool, context.allocator, bounce_band, &bands[b])
 	}
 	if total > 8 {
-		wait_progress(&done, total, "回弹")
+		wait_progress(&done, total, "Bounce")
 	}
 	thread.pool_finish(&ctx.pool)
 	return true

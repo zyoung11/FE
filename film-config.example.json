@@ -1,0 +1,58 @@
+{
+  "height": 540,
+  "supersample": 2,
+  "samples": 200,
+  "bounce_samples": 200,
+  "gamma": 2.2,
+  "exposure": 0.05,
+  "contrast": 1.1,
+  "reflectance": 0.05,
+  "thickness": 25.0,
+  "film": 0.6,
+  "print_toe": 0.3,
+  "print_shoulder": 0.3,
+  "sat_lo": 0.2,
+  "sat_hi": 0.25,
+  "cross": 0.05,
+  "seed": 42,
+  "device": "auto",
+  "bitrate": 80,
+  "maxrate": 120,
+  "emulsions": [
+    {
+      "dye": [255, 255, 0],
+      "grain_radius": 0.02,
+      "grain_sigma": 0.001,
+      "sigma_filter": 0.004,
+      "mtf_blur": 0.5,
+      "mtf_blur_max": 1.2
+    },
+    {
+      "dye": [255, 0, 255],
+      "grain_radius": 0.02,
+      "grain_sigma": 0.001,
+      "sigma_filter": 0.004,
+      "mtf_blur": 0.5,
+      "mtf_blur_max": 1.2
+    },
+    {
+      "dye": [0, 255, 255],
+      "grain_radius": 0.02,
+      "grain_sigma": 0.001,
+      "sigma_filter": 0.004,
+      "mtf_blur": null,
+      "mtf_blur_max": null
+    }
+  ],
+  "filters": [
+    { "color": [255, 255, 0] },
+    { "color": [255, 0, 255] }
+  ],
+  "film_bases": [
+    { "thickness": 25.0 }
+  ],
+  "backs": [
+    { "reflectance": 0.05 }
+  ],
+  "order": ["emulsion:0", "filter:0", "emulsion:1", "filter:1", "emulsion:2", "film_base:0", "back:0"]
+}

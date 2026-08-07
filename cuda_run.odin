@@ -117,21 +117,21 @@ cuda_load_symbols :: proc(lib: dynlib.Library) -> bool {
 cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: int, verbose := true) -> bool {
 	lib, ok := dynlib.load_library(CUDA_LIB, global_symbols = true)
 	if !ok {
-		warn(fmt.tprintf("未找到 %s", CUDA_LIB))
+		warn(fmt.tprintf("%s not found", CUDA_LIB))
 		return false
 	}
 	c.lib = lib
 	if !cuda_load_symbols(lib) {
-		warn("CUDA 驱动符号加载失败")
+		warn("Failed to load CUDA driver symbols")
 		return false
 	}
 	if cu_init(0) != 0 {
-		warn("cuInit 失败")
+		warn("cuInit failed")
 		return false
 	}
 	count: i32
 	if cu_device_get_count(&count) != 0 || count <= 0 {
-		warn("未检测到 CUDA 设备")
+		warn("No CUDA device detected")
 		return false
 	}
 	for i in 0 ..< int(count) {
@@ -141,20 +141,20 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 		}
 		name_buf: [256]u8
 		if cu_device_get_name(cstring(&name_buf[0]), 256, d) == 0 && verbose {
-			info(fmt.tprintf("CUDA 设备 %d: %s", i, string(cstring(&name_buf[0]))))
+			info(fmt.tprintf("CUDA device %d: %s", i, string(cstring(&name_buf[0]))))
 		}
 	}
 	if ordinal >= int(count) {
-		warn(fmt.tprintf("CUDA 设备 %d 不存在（共 %d 个）", ordinal, count))
+		warn(fmt.tprintf("CUDA device %d does not exist (%d available)", ordinal, count))
 		return false
 	}
 	if cu_device_get(&c.dev, i32(ordinal)) != 0 {
-		warn(fmt.tprintf("cuDeviceGet(%d) 失败", ordinal))
+		warn(fmt.tprintf("cuDeviceGet(%d) failed", ordinal))
 		return false
 	}
 	name_buf: [256]u8
 	if cu_device_get_name(cstring(&name_buf[0]), 256, c.dev) != 0 {
-		warn("cuDeviceGetName 失败")
+		warn("cuDeviceGetName failed")
 		return false
 	}
 	if verbose {
@@ -163,23 +163,23 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 
 	major, minor: i32
 	if cu_device_compute_capability(&major, &minor, c.dev) != 0 {
-		warn("cuDeviceComputeCapability 失败，回退 CPU")
+		warn("cuDeviceComputeCapability failed, falling back to CPU")
 		return false
 	}
 	if verbose {
-		info(fmt.tprintf("CUDA 架构: %d.%d", major, minor))
+		info(fmt.tprintf("CUDA arch: %d.%d", major, minor))
 	}
 	ptx_data := KERNEL_PTX_BASE
 	if major >= 12 {
 		ptx_data = KERNEL_PTX_120
 	}
 	if cu_ctx_create(&c.ctx, 0, c.dev) != 0 {
-		warn("cuCtxCreate 失败，回退 CPU")
+		warn("cuCtxCreate failed, falling back to CPU")
 		return false
 	}
 	if cu_module_load_data(&c.module, raw_data(ptx_data)) != 0 {
 		if cu_module_load_data(&c.module, raw_data(KERNEL_PTX_BASE)) != 0 {
-			warn("CUDA 模块加载失败，回退 CPU")
+			warn("CUDA module load failed, falling back to CPU")
 			return false
 		}
 	}
@@ -192,7 +192,7 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_module_get_function(&c.sum_fn, c.module, "sum_kernel") != 0 ||
 	   cu_module_get_function(&c.sum_final_fn, c.module, "sum_final_kernel") != 0 ||
 	   cu_module_get_function(&c.blend_fn, c.module, "blend_kernel") != 0 {
-		warn("CUDA 内核查找失败，回退 CPU")
+		warn("CUDA kernel lookup failed, falling back to CPU")
 		return false
 	}
 
@@ -213,7 +213,7 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_mem_alloc(&c.d_blur_max, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_sum, u64((w * h + 255) / 256) * 4 + 4) != 0 ||
 	   cu_mem_alloc(&c.d_blur_kernel, 256) != 0 {
-		warn("CUDA 显存分配失败，回退 CPU")
+		warn("CUDA memory allocation failed, falling back to CPU")
 		cuda_cleanup(c)
 		return false
 	}

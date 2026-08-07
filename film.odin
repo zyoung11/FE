@@ -7,7 +7,7 @@ import "core:thread"
 
 EPS :: 1e-5
 
-// 颗粒平滑模糊半径（像素），用于消除暗部白色采样噪声
+// Grain smoothing blur radius (px), used to remove white sampling noise in shadows
 GRAIN_SMOOTH_SIGMA :: 1.0
 
 Film_Params :: struct {

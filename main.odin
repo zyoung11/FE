@@ -255,9 +255,9 @@ progress_line :: proc(n: int, total: int, start: time.Time) {
 	avg := elapsed / f32(max(1, n))
 	if total > 0 {
 		eta := avg * f32(max(0, total - n))
-		fmt.printf("\r\x1b[2K%s[i]%s 帧 %d/%d (%.2fs/帧, 已用 %.1fs, 预计剩余 %.1fs)", BLUE, RESET, n, total, avg, elapsed, eta)
+		fmt.printf("\r\x1b[2K%s[i]%s frame %d/%d (%.2fs/frame, elapsed %.1fs, ETA %.1fs)", BLUE, RESET, n, total, avg, elapsed, eta)
 	} else {
-		fmt.printf("\r\x1b[2K%s[i]%s 帧 %d (%.2fs/帧, 已用 %.1fs)", BLUE, RESET, n, avg, elapsed)
+		fmt.printf("\r\x1b[2K%s[i]%s frame %d (%.2fs/frame, elapsed %.1fs)", BLUE, RESET, n, avg, elapsed)
 	}
 }
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
@@ -270,35 +270,72 @@ stage_time :: proc(label: string, t0: time.Time, verbose := true) -> time.Time {
 }
 
 Options :: struct {
-	input:          string `usage:"输入图像路径" args:"required"`,
-	output:         string `usage:"输出图像路径 (PNG)"`,
-	auto:           bool `usage:"一键胶片风格 (内容自适应配置)"`,
-	mode:           string `usage:"auto 模式胶片类型: color(默认) | bw"`,
-	film_cfg:       string `args:"name=film_cfg" usage:"胶片配置 TOML (auto 模式下忽略)"`,
-	height:         int `usage:"输出高度 (像素)"`,
-	supersample:    int `usage:"超采样倍数"`,
-	samples:        int `usage:"每像素蒙特卡洛采样数"`,
-	bounce_samples: int `args:"name=bounce_samples" usage:"halation 回弹采样数"`,
-	gamma:          f32 `usage:"sRGB gamma"`,
-	mtf:            f32 `usage:"MTF 软化 (px, 绝对值, -1 使用配置)"`,
-	exposure:       f32 `usage:"曝光补偿 (999 使用默认)"`,
-	contrast:       f32 `usage:"对比度 (0 使用默认)"`,
-	reflectance:    f32 `usage:"背面反射率 (-1 使用配置)"`,
-	thickness:      f32 `usage:"片基厚度 (-1 使用配置)"`,
-	grain_radius:   f32 `args:"name=grain_radius" usage:"覆盖颗粒半径 (像素, -1 使用配置)"`,
-	grain_sigma:    f32 `args:"name=grain_sigma" usage:"覆盖颗粒 sigma (-1 使用配置)"`,
-	sigma_filter:   f32 `args:"name=sigma_filter" usage:"覆盖采样抖动 sigma (-1 使用配置)"`,
-	seed:           u32 `usage:"随机种子"`,
-	device:         string `usage:"渲染设备: auto(默认) | cpu | cuda | cuda:N"`,
-	video:          bool `usage:"视频模式 (输入为视频文件, 输出视频)"`,
-	film:           f32 `usage:"胶片 S 曲线强度 (0=关, 1=满, 视频默认 0.5)"`,
-	print_toe: f32 `usage:"印片趾部强度 (负值=auto)"`,
-	print_shoulder: f32 `usage:"印片肩部强度 (负值=auto)"`,
-	sat_lo:         f32 `usage:"暗部去饱和系数 (负值=auto)"`,
-	sat_hi:         f32 `usage:"高光去饱和系数 (负值=auto)"`,
-	cross:          f32 `usage:"色彩交叉系数 (负值=auto)"`,
-	bitrate:        int `usage:"视频平均码率 Mbps (默认 60)"`,
-	maxrate:        int `usage:"视频峰值码率 Mbps (默认 100)"`,
+	height:         int,
+	supersample:    int,
+	samples:        int,
+	bounce_samples: int,
+	gamma:          f32,
+	mtf:            f32,
+	exposure:       f32,
+	contrast:       f32,
+	reflectance:    f32,
+	thickness:      f32,
+	grain_radius:   f32,
+	grain_sigma:    f32,
+	sigma_filter:   f32,
+	seed:           u32,
+	device:         string,
+	film:           f32,
+	print_toe:      f32,
+	print_shoulder: f32,
+	sat_lo:         f32,
+	sat_hi:         f32,
+	cross:          f32,
+	bitrate:        int,
+	maxrate:        int,
+	mode:           string,
+}
+
+Cli_Options :: struct {
+	input:  string `usage:"Input file path (photo or video)" args:"required"`,
+	output: string `usage:"Output file path; extension decides format: photo .png/.jpg, video .mp4/.mov/.mkv" args:"required"`,
+	auto:   bool   `usage:"Auto mode (content-adaptive, default)"`,
+	config: string `usage:"JSON config file path (custom mode)"`,
+	mode:   string `usage:"Auto mode film type: color (default) | bw"`,
+}
+
+File_Type :: enum {
+	Photo,
+	Video,
+	Unknown,
+}
+
+detect_file_type :: proc(path: string) -> File_Type {
+	ext := strings.to_lower(filepath.ext(path))
+	defer delete(ext)
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".gif":
+		return .Photo
+	case ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".ts", ".m2ts", ".flv", ".wmv", ".mpg", ".mpeg":
+		return .Video
+	}
+	return .Unknown
+}
+
+write_image :: proc(path: string, data: []u8, w: int, h: int) -> bool {
+	output_cstr := strings.clone_to_cstring(path)
+	defer delete(output_cstr)
+	ext := strings.to_lower(filepath.ext(path))
+	defer delete(ext)
+	switch ext {
+	case ".png":
+		return stb.write_png(output_cstr, c.int(w), c.int(h), 3, raw_data(data), c.int(w * 3)) != 0
+	case ".jpg", ".jpeg":
+		return stb.write_jpg(output_cstr, c.int(w), c.int(h), 3, raw_data(data), 90) != 0
+	case ".bmp":
+		return stb.write_bmp(output_cstr, c.int(w), c.int(h), 3, raw_data(data)) != 0
+	}
+	return false
 }
 
 main :: proc() {
@@ -307,30 +344,7 @@ main :: proc() {
 		windows.SetConsoleCP(windows.CODEPAGE(65001))
 	}
 	start := time.now()
-	opts: Options
-	opts.output = "out.png"
-	opts.mode = "color"
-	opts.film_cfg = "film-config.toml"
-	opts.supersample = 0
-	opts.samples = 0
-	opts.bounce_samples = 0
-	opts.gamma = 0
-	opts.mtf = -1.0
-	opts.exposure = 999.0
-	opts.contrast = 0.0
-	opts.reflectance = -1.0
-	opts.thickness = -1.0
-	opts.grain_radius = -1.0
-	opts.grain_sigma = -1.0
-	opts.sigma_filter = -1.0
-	opts.seed = 12345
-	opts.device = "auto"
-	opts.print_toe = -1
-	opts.print_shoulder = -1
-	opts.sat_lo = -1
-	opts.sat_hi = -1
-	opts.cross = -1
-
+	cli: Cli_Options
 	unicode_args := parse_cmdline_wide(cast([^]u16)windows.GetCommandLineW())
 	defer {
 		for a in unicode_args {
@@ -338,24 +352,43 @@ main :: proc() {
 		}
 		delete(unicode_args)
 	}
-	if err := flags.parse(&opts, unicode_args[1:], style = .Unix); err != nil {
+	if err := flags.parse(&cli, unicode_args[1:], style = .Unix); err != nil {
 		if _, is_help := err.(flags.Help_Request); is_help {
-			flags.write_usage(os.to_stream(os.stdout), Options, filepath.base(os.args[0]), .Unix)
+			flags.write_usage(os.to_stream(os.stdout), Cli_Options, filepath.base(os.args[0]), .Unix)
 			os.exit(0)
 		}
-		fail(fmt.tprintf("参数解析失败: %v", err))
+		fail(fmt.tprintf("Failed to parse arguments: %v", err))
 		os.exit(1)
 	}
-	if opts.mode != "color" && opts.mode != "bw" {
-		fail("--mode 只能是 color 或 bw")
+	if cli.auto && cli.config != "" {
+		fail("--auto and --config cannot be used together")
 		os.exit(1)
 	}
-	if opts.height <= 0 {
-		if opts.video {
-			opts.height = 2160
-		} else {
-			opts.height = 1080
-		}
+	if cli.mode != "" && cli.mode != "color" && cli.mode != "bw" {
+		fail("--mode must be \"color\" or \"bw\"")
+		os.exit(1)
+	}
+	in_type := detect_file_type(cli.input)
+	out_type := detect_file_type(cli.output)
+	if in_type == .Unknown {
+		fail(fmt.tprintf("Unrecognized input file type: %s (photos .png/.jpg/.bmp, videos .mp4/.mov/.mkv/.webm etc.)", cli.input))
+		os.exit(1)
+	}
+	if out_type == .Unknown {
+		fail(fmt.tprintf("Unrecognized output file extension: %s (photos .png/.jpg/.bmp, videos .mp4/.mov/.mkv/.webm)", cli.output))
+		os.exit(1)
+	}
+	if in_type == .Photo && out_type == .Video {
+		fail(fmt.tprintf("Input is a photo but output has a video extension: %s", cli.output))
+		os.exit(1)
+	}
+	if in_type == .Video && out_type == .Photo {
+		fail(fmt.tprintf("Input is a video but output has a photo extension: %s", cli.output))
+		os.exit(1)
+	}
+	opts := default_options()
+	if cli.mode != "" {
+		opts.mode = cli.mode
 	}
 	device_choice: Device_Choice
 	switch opts.device {
@@ -370,69 +403,56 @@ main :: proc() {
 		if strings.has_prefix(opts.device, "cuda:") {
 			n, ok := strconv.parse_int(opts.device[5:])
 			if !ok || n < 0 {
-				fail("--device 格式: auto | cpu | cuda | cuda:N")
+				fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
 				os.exit(1)
 			}
 			device_choice.kind = .Cuda
 			device_choice.ordinal = n
 		} else {
-			fail("--device 格式: auto | cpu | cuda | cuda:N")
+			fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
 			os.exit(1)
 		}
 	}
-	if opts.auto {
-		if opts.supersample == 0 {opts.supersample = 2}
-		if opts.gamma == 0 {opts.gamma = 2.4}
-		if opts.reflectance < 0 {opts.reflectance = 0.03}
-		if opts.thickness < 0 {opts.thickness = 20.0}
-	} else {
-		if opts.supersample == 0 {opts.supersample = 1}
-		if opts.gamma == 0 {opts.gamma = 2.2}
-		if opts.exposure == 999.0 {opts.exposure = 0.0}
-		if opts.contrast == 0 {opts.contrast = 1.0}
-	}
 
-	if opts.video {
-		run_video(&opts, device_choice)
+	if in_type == .Video {
+		run_video(&opts, &cli, device_choice)
 		return
 	}
-	input_cstr := strings.clone_to_cstring(opts.input)
+	if opts.height <= 0 {
+		opts.height = 1080
+	}
+	input_cstr := strings.clone_to_cstring(cli.input)
 	defer delete(input_cstr)
 	w, h, ch: c.int
 	t := time.now()
 	pixels := stb.load(input_cstr, &w, &h, &ch, 3)
 	if pixels == nil {
-		fail(fmt.tprintf("无法读取图像: %s", opts.input))
+		fail(fmt.tprintf("Failed to read image: %s", cli.input))
 		os.exit(1)
 	}
 	defer stb.image_free(pixels)
-	info(fmt.tprintf("输入: %s (%dx%d)", opts.input, w, h))
-	t = stage_time("图像加载", t)
+	info(fmt.tprintf("Input: %s (%dx%d)", cli.input, w, h))
+	t = stage_time("Image load", t)
 
-	if opts.video {
-		run_video(&opts, device_choice)
-		return
-	}
-	cfg, cfg_ok := setup_config(&opts, pixels[:int(w) * int(h) * 3], int(w), int(h), false)
+	cfg, cfg_ok := resolve_config(&opts, cli.config != "", pixels[:int(w) * int(h) * 3], int(w), int(h), false, cli.config)
 	if !cfg_ok {
-		fail(fmt.tprintf("无法解析胶片配置: %s", opts.film_cfg))
 		os.exit(1)
 	}
 	defer destroy_film_config(&cfg)
-	t = stage_time("配置解析", t)
+	t = stage_time("Config parse", t)
 	h_sim := opts.height * opts.supersample
 	w_sim := max(1, int(f32(w) * f32(h_sim) / f32(h) + 0.5))
 	ctx: Compute_Context
 	if !sim_init(&ctx, u32(w_sim), u32(h_sim), u32(len(cfg.emulsions)), device_choice) {
-		fail("渲染器初始化失败")
+		fail("Renderer initialization failed")
 		os.exit(1)
 	}
 	defer sim_cleanup(&ctx)
-	t = stage_time("渲染器初始化", t)
+	t = stage_time("Renderer init", t)
 
 	out8, out_w, out_h, rok := render_frame(&ctx, &opts, &cfg, pixels[:int(w) * int(h) * 3], int(w), int(h), opts.seed, &t, true)
 	if !rok {
-		fail("渲染失败")
+		fail("Render failed")
 		os.exit(1)
 	}
 	defer delete(out8)
@@ -456,122 +476,51 @@ main :: proc() {
 		)
 	}
 
-	output_cstr := strings.clone_to_cstring(opts.output)
-	defer delete(output_cstr)
-	if stb.write_png(
-		   output_cstr,
-		   c.int(out_w),
-		   c.int(out_h),
-		   3,
-		   raw_data(png_data),
-		   c.int(out_w * 3),
-	   ) ==
-	   0 {
-		fail(fmt.tprintf("无法写出图像: %s", opts.output))
+	if !write_image(cli.output, png_data, out_w, out_h) {
+		fail(fmt.tprintf("Failed to write image: %s", cli.output))
 		os.exit(1)
 	}
-	success(fmt.tprintf("已保存 %s", opts.output))
-	success(fmt.tprintf("总耗时 %s", time.since(start)))
+	success(fmt.tprintf("Saved %s", cli.output))
+	success(fmt.tprintf("Total time %s", time.since(start)))
 }
 
-setup_config :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> (Film_Config, bool) {
-	if opts.samples == 0 {opts.samples = 400}
-	if opts.bounce_samples == 0 {opts.bounce_samples = 400}
-	auto_mtf := opts.mtf
-	if opts.auto {
-		sharpness := content_sharpness(raw_data(pixels), w, h)
-		auto_res := compute_auto(sharpness, opts.height)
-		gr := auto_res.grain_radius
-		sf := auto_res.sigma_filter
-		gs := auto_res.grain_sigma
-		if for_video {
-			gr *= 2.2
-			sf *= 4.0
-			gs *= 2.0
+resolve_config :: proc(
+	opts: ^Options,
+	config_mode: bool,
+	pixels: []u8,
+	w: int,
+	h: int,
+	for_video: bool,
+	config_path: string,
+) -> (cfg: Film_Config, ok: bool) {
+	if config_mode {
+		parsed, parsed_opts, pok := parse_config_file(config_path)
+		if !pok {
+			fail(fmt.tprintf("Failed to parse config file: %s (JSON format required)", config_path))
+			return {}, false
 		}
-		info(fmt.tprintf("内容锐度: %.2f", sharpness))
-		if opts.grain_radius < 0 {opts.grain_radius = gr}
-		if opts.grain_sigma < 0 {opts.grain_sigma = gs}
-		if opts.sigma_filter < 0 {opts.sigma_filter = sf}
-		if auto_mtf < 0 {
-			auto_mtf = auto_res.mtf_abs
-			if for_video {
-				auto_mtf *= 2.0
-			}
-		}
-		t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
-		avg, lo, hi := image_stats(pixels, w, h)
-		film_base: f32 = 0.5
-		if for_video {
-			film_base = 0.5
-		}
-		if opts.film == 0 {opts.film = film_base + 0.2 * t}
-		if opts.print_toe < 0 {opts.print_toe = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
-		if opts.print_shoulder < 0 {opts.print_shoulder = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
-		if opts.sat_lo < 0 {opts.sat_lo = 0.12 + 0.08 * (1.0 - avg)}
-		if opts.sat_hi < 0 {opts.sat_hi = 0.15 + 0.1 * t}
-		if opts.cross < 0 {opts.cross = 0.03}
-		if opts.exposure == 999.0 {
-			opts.exposure = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35)
-		}
-		if opts.contrast == 0 {
-			opts.contrast = clamp(1.15 - (hi - lo) * 0.3, 0.85, 1.15)
-		}
-		info(
-			fmt.tprintf(
-				"auto: 颗粒 R=%.3f SIG=%.3f F=%.3f MTF=%.3f 印片 T=%.2f S=%.2f EXP=%.3f CON=%.2f",
-				opts.grain_radius,
-				opts.grain_sigma,
-				opts.sigma_filter,
-				auto_mtf,
-				opts.print_toe,
-				opts.print_shoulder,
-				opts.exposure,
-				opts.contrast,
-			),
-		)
-	}
-	cfg_text := ""
-	cfg_text_owned := false
-	defer if cfg_text_owned {delete(cfg_text)}
-	if opts.auto {
-		cfg_text = build_cfg_text(
-			opts.mode,
-			opts.thickness,
-			opts.reflectance,
-			opts.grain_radius,
-			opts.grain_sigma,
-			opts.sigma_filter,
-			auto_mtf,
-		)
-		cfg_text_owned = true
-	}
-	cfg: Film_Config
-	cfg_ok: bool
-	if opts.auto {
-		cfg, cfg_ok = parse_film_config_text(cfg_text)
+		opts^ = parsed_opts
+		cfg = parsed
 	} else {
-		cfg, cfg_ok = parse_film_config(opts.film_cfg)
-	}
-	if !cfg_ok {
-		fail(fmt.tprintf("无法解析胶片配置: %s", opts.film_cfg))
-		return {}, false
-	}
-	if len(cfg.emulsions) == 0 {
-		destroy_film_config(&cfg)
-		fail("配置中至少需要一个 [[emulsion]] 块")
-		return {}, false
-	}
-	if len(cfg.filters) != len(cfg.emulsions) && len(cfg.filters) != len(cfg.emulsions) - 1 {
-		destroy_film_config(&cfg)
-		fail("#[[filter]] 必须等于 #[[emulsion]] 或少一个")
-		return {}, false
-	}
-	if opts.mtf >= 0 {
-		for &emu in cfg.emulsions {
-			emu.mtf_blur = opts.mtf * 0.6
-			emu.mtf_blur_max = opts.mtf * 1.4
+		auto_cfg, aok := build_auto_config_from_pixels(opts, pixels, w, h, for_video)
+		if !aok {
+			return {}, false
 		}
+		cfg = auto_cfg
+	}
+	if for_video {
+		if opts.samples == 0 {opts.samples = 128}
+		if opts.bounce_samples == 0 {opts.bounce_samples = 128}
+		if opts.film == 0 {opts.film = 0.5}
+	} else {
+		if opts.samples == 0 {opts.samples = 400}
+		if opts.bounce_samples == 0 {opts.bounce_samples = 400}
+	}
+	if opts.supersample == 0 {opts.supersample = 1}
+	if opts.gamma == 0 {opts.gamma = 2.2}
+	if !validate_film_config(opts, &cfg) {
+		destroy_film_config(&cfg)
+		return {}, false
 	}
 	return cfg, true
 }
@@ -604,7 +553,7 @@ render_frame :: proc(
 			3,
 		)
 		if verbose {
-			info(fmt.tprintf("缩放至: %dx%d", w_sim, h_sim))
+			info(fmt.tprintf("Resized to: %dx%d", w_sim, h_sim))
 		}
 	} else {
 		copy(resized, input[:fw * fh * 3])
@@ -614,7 +563,7 @@ render_frame :: proc(
 	ray_front := make([]f32, n * 3)
 	defer delete(ray_front)
 	parallel_for(n, &Lin_Data{ray_front = ray_front, resized = resized, gamma = opts.gamma}, lin_task)
-	t^ = stage_time("缩放与线性化", t^, verbose)
+	t^ = stage_time("Resize & linearize", t^, verbose)
 
 	film_thick := f32(1.0)
 	if len(cfg.bases) > 0 {
@@ -677,7 +626,7 @@ render_frame :: proc(
 				if sigma_mtf > 0 {
 					blurred, ok := gauss_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf)
 					if !ok {
-						fail("高斯模糊失败")
+						fail("Gaussian blur failed")
 						return nil, 0, 0, false
 					}
 					defer delete(blurred)
@@ -686,7 +635,7 @@ render_frame :: proc(
 			} else if sigma_mtf > 0 {
 				blurred, ok := adaptive_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
 				if !ok {
-					fail("自适应模糊失败")
+					fail("Adaptive blur failed")
 					return nil, 0, 0, false
 				}
 				defer delete(blurred)
@@ -720,12 +669,12 @@ render_frame :: proc(
 				ag         = params.ag,
 				lambda_fac = params.lambda_fac,
 			}
-			t^ = stage_time(fmt.tprintf("[emu %d] CPU 预处理", idx), t^, verbose)
+			t^ = stage_time(fmt.tprintf("[emu %d] CPU preprocess", idx), t^, verbose)
 			if !dispatch_render(ctx, render_params, src, neg) {
-				fail("调度失败")
+				fail("Dispatch failed")
 				return nil, 0, 0, false
 			}
-			t^ = stage_time(fmt.tprintf("[emu %d] GPU 渲染", idx), t^, verbose)
+			t^ = stage_time(fmt.tprintf("[emu %d] GPU render", idx), t^, verbose)
 			dens := make([]f32, n)
 			copy(dens, neg)
 			append(&layer_absorbs, absorb)
@@ -764,14 +713,14 @@ render_frame :: proc(
 		parallel_for(n, &Front_Assemble_Data{front = front, dens = dens, absorb = absorb}, front_assemble_task)
 		dens_smooth, ok := gauss_blur_dispatch(ctx, dens, w_sim, h_sim, GRAIN_SMOOTH_SIGMA)
 		if !ok {
-			fail("颗粒平滑模糊失败")
+			fail("Grain smoothing blur failed")
 			return nil, 0, 0, false
 		}
 		defer delete(dens_smooth)
 		parallel_for(n, &Front_Assemble_Data{front = front_smooth, dens = dens_smooth, absorb = absorb}, front_assemble_task)
 	}
 	parallel_for(n * 3, &Min_Data{front = front, smooth = front_smooth}, min_task)
-	t^ = stage_time("front 组装", t^, verbose)
+	t^ = stage_time("Front assembly", t^, verbose)
 
 	final := front
 	defer if back_refl > EPS {delete(final)}
@@ -802,7 +751,7 @@ render_frame :: proc(
 		bounced := make([]f32, n * 3)
 		defer delete(bounced)
 		if verbose {
-			info(fmt.tprintf("halation 回弹 %d 采样/像素 ...", opts.bounce_samples))
+			info(fmt.tprintf("Halation bounce %d samples/pixel ...", opts.bounce_samples))
 		}
 		bounce_params := Bounce_Params {
 			width     = u32(w_sim),
@@ -812,7 +761,7 @@ render_frame :: proc(
 			seed      = 424242,
 			film_px   = film_thick,
 		}
-		t^ = stage_time("halation 准备", t^, verbose)
+		t^ = stage_time("Halation prep", t^, verbose)
 		if !dispatch_bounce(
 			ctx,
 			bounce_params,
@@ -822,18 +771,18 @@ render_frame :: proc(
 			absorb_stack,
 			depth,
 		) {
-			fail("调度失败")
+			fail("Dispatch failed")
 			return nil, 0, 0, false
 		}
 
-		t^ = stage_time("halation GPU 回弹", t^, verbose)
+		t^ = stage_time("Halation GPU bounce", t^, verbose)
 		final = make([]f32, n * 3)
 		parallel_for(n * 3, &Final_Data{front = front, bounced = bounced, final = final, back_refl = back_refl}, final_task)
 	}
 	if verbose {
-		success("仿真完成")
+		success("Simulation complete")
 	}
-	t^ = stage_time("合成与输出", t^, verbose)
+	t^ = stage_time("Compose & output", t^, verbose)
 
 	out8 := make([]u8, n * 3)
 	pt := opts.print_toe
@@ -880,7 +829,7 @@ Render_Worker :: struct {
 render_worker_main :: proc(t: ^thread.Thread) {
 	w := cast(^Render_Worker)t.data
 	if !sim_init(&w.ctx, w.w_sim, w.h_sim, w.n_layers, w.device, w.idx == 0) {
-		fail("渲染 worker 初始化失败")
+		fail("Render worker initialization failed")
 		os.exit(1)
 	}
 	defer sim_cleanup(&w.ctx)
@@ -893,7 +842,7 @@ render_worker_main :: proc(t: ^thread.Thread) {
 		out8, _, _, rok := render_frame(&w.ctx, w.opts, w.cfg, task.data, w.fw, w.fh, w.seed_base + u32(task.frame) * 6743, &tt, false)
 		delete(task.data)
 		if !rok {
-			fail("帧渲染失败")
+			fail("Frame render failed")
 			os.exit(1)
 		}
 		if !chan.send(w.results, Render_Result{frame = task.frame, out8 = out8}) {
@@ -925,32 +874,30 @@ collect_one :: proc(res: Render_Result, next_seq: ^int, pending: ^map[int][]u8, 
 	return true
 }
 
-run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
-	vinfo, ok := video_probe(opts.input)
+run_video :: proc(opts: ^Options, cli: ^Cli_Options, device_choice: Device_Choice) {
+	vinfo, ok := video_probe(cli.input)
 	if !ok {
-		fail(fmt.tprintf("无法探测视频: %s", opts.input))
+		fail(fmt.tprintf("Failed to probe video: %s", cli.input))
 		os.exit(1)
 	}
-	info(fmt.tprintf("视频: %dx%d @%.2f fps, %d 帧", vinfo.width, vinfo.height, vinfo.fps, vinfo.n_frames))
+	info(fmt.tprintf("Video: %dx%d @%.2f fps, %d frames", vinfo.width, vinfo.height, vinfo.fps, vinfo.n_frames))
 	opts.supersample = 1
-	if opts.samples == 0 {opts.samples = 128}
-	if opts.bounce_samples == 0 {opts.bounce_samples = 128}
-	if !opts.auto && opts.film == 0 {opts.film = 0.5}
+	if opts.height <= 0 {opts.height = 2160}
 	if opts.bitrate <= 0 {opts.bitrate = 60}
 	if opts.maxrate <= 0 {opts.maxrate = 100}
 
-	vin, ok2 := video_in_start(opts.input, vinfo)
+	vin, ok2 := video_in_start(cli.input, vinfo)
 	if !ok2 {
-		fail("视频解码器启动失败 (需要 ffmpeg 在 PATH 中)")
+		fail("Failed to start video decoder (ffmpeg required in PATH)")
 		os.exit(1)
 	}
 	frame_buf := make([]u8, vinfo.width * vinfo.height * 3)
 	defer delete(frame_buf)
 	if !video_next_frame(vin, frame_buf) {
-		fail("无法解码第一帧")
+		fail("Failed to decode first frame")
 		os.exit(1)
 	}
-	cfg, cfg_ok := setup_config(opts, frame_buf, vinfo.width, vinfo.height, true)
+	cfg, cfg_ok := resolve_config(opts, cli.config != "", frame_buf, vinfo.width, vinfo.height, true, cli.config)
 	if !cfg_ok {
 		os.exit(1)
 	}
@@ -958,17 +905,17 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 
 	h_sim := opts.height * opts.supersample
 	w_sim := max(1, int(f32(vinfo.width) * f32(h_sim) / f32(vinfo.height) + 0.5))
-	info(fmt.tprintf("输出: %dx%d @%.2f fps", w_sim, h_sim, vinfo.fps))
+	info(fmt.tprintf("Output: %dx%d @%.2f fps", w_sim, h_sim, vinfo.fps))
 
-	vout, ok4 := video_out_start(opts.output, w_sim, h_sim, vinfo.fps, opts.input, opts.bitrate, opts.maxrate)
+	vout, ok4 := video_out_start(cli.output, w_sim, h_sim, vinfo.fps, cli.input, opts.bitrate, opts.maxrate)
 	if !ok4 {
-		fail("视频编码器启动失败 (需要 ffmpeg 在 PATH 中, 且显卡支持 NVENC)")
+		fail("Failed to start video encoder (ffmpeg in PATH and NVENC-capable GPU required)")
 		os.exit(1)
 	}
 
 	results, rerr := chan.create_buffered(chan.Chan(Render_Result), 8, context.allocator)
 	if rerr != nil {
-		fail("创建渲染结果队列失败")
+		fail("Failed to create render result queue")
 		os.exit(1)
 	}
 	defer chan.destroy(results)
@@ -1000,7 +947,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 		w.results = results
 		tasks, terr := chan.create_buffered(chan.Chan(Render_Task), 4, context.allocator)
 		if terr != nil {
-			fail("创建渲染任务队列失败")
+			fail("Failed to create render task queue")
 			os.exit(1)
 		}
 		w.tasks = tasks
@@ -1027,7 +974,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 		task := Render_Task{frame = f, data = make([]u8, len(frame_buf))}
 		copy(task.data, frame_buf)
 		if !chan.send(workers[f % n_workers].tasks, task) {
-			fail("渲染队列关闭")
+			fail("Render queue closed")
 			os.exit(1)
 		}
 		actual = f + 1
@@ -1037,7 +984,7 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 				break
 			}
 			if !collect_one(res, &next_seq, &pending, vout) {
-				fail("编码输出失败")
+				fail("Failed to encode output")
 				os.exit(1)
 			}
 			n_encoded = next_seq
@@ -1050,11 +997,11 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	for next_seq < actual {
 		res, ok := chan.recv(results)
 		if !ok {
-			fail("渲染结果队列关闭")
+			fail("Render result queue closed")
 			os.exit(1)
 		}
 		if !collect_one(res, &next_seq, &pending, vout) {
-			fail("编码输出失败")
+			fail("Failed to encode output")
 			os.exit(1)
 		}
 		n_encoded = next_seq
@@ -1067,5 +1014,5 @@ run_video :: proc(opts: ^Options, device_choice: Device_Choice) {
 	video_in_finish(vin)
 	video_out_finish(vout)
 	fmt.println()
-	success(fmt.tprintf("视频处理完成: %d 帧, 总耗时 %s", n_encoded, time.since(start)))
+	success(fmt.tprintf("Video processed: %d frames, total time %s", n_encoded, time.since(start)))
 }

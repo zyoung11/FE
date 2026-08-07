@@ -2,7 +2,6 @@ package main
 
 import "core:c"
 import "core:fmt"
-import "core:strings"
 import stb "vendor:stb/image"
 
 Auto_Result :: struct {
@@ -118,7 +117,7 @@ image_stats :: proc(pixels: []u8, w: int, h: int) -> (avg: f32, lo: f32, hi: f32
 	return
 }
 
-build_cfg_text :: proc(
+build_auto_config :: proc(
 	mode: string,
 	thickness: f32,
 	reflectance: f32,
@@ -126,50 +125,107 @@ build_cfg_text :: proc(
 	s: f32,
 	f: f32,
 	mtf_abs: f32,
-) -> string {
-	sb := strings.builder_make()
-	defer strings.builder_destroy(&sb)
+) -> Film_Config {
+	cfg: Film_Config
 	if mode == "bw" {
-		strings.write_string(&sb, "[[emulsion]]\n")
-		strings.write_string(&sb, "sensitising_dye_color = [0, 0, 0]\n")
-		strings.write_string(&sb, fmt.tprintf("grain_radius = %.4f\n", r))
-		strings.write_string(&sb, fmt.tprintf("grain_sigma = %.4f\n", s))
-		strings.write_string(&sb, fmt.tprintf("sigma_filter = %.4f\n", f))
-		strings.write_string(&sb, fmt.tprintf("mtf_blur = %.4f\n", mtf_abs * 0.6))
-		strings.write_string(&sb, fmt.tprintf("mtf_blur_max = %.4f\n", mtf_abs * 1.4))
-		strings.write_string(&sb, "\n")
+		append(
+			&cfg.emulsions,
+			Emulsion_Cfg {
+				dye          = {0, 0, 0},
+				grain_radius = r,
+				grain_sigma  = s,
+				sigma_filter = f,
+				mtf_blur     = mtf_abs * 0.6,
+				mtf_blur_max = mtf_abs * 1.4,
+			},
+		)
+		append(&cfg.order, Config_Item {kind = .Emulsion, index = 0})
 	} else {
 		dyes := [3][3]u8{{255, 255, 0}, {255, 0, 255}, {0, 255, 255}}
 		for i in 0 ..< 3 {
-			strings.write_string(&sb, "[[emulsion]]\n")
-			strings.write_string(
-				&sb,
-				fmt.tprintf(
-					"sensitising_dye_color = [%d, %d, %d]\n",
-					dyes[i][0],
-					dyes[i][1],
-					dyes[i][2],
-				),
+			append(
+				&cfg.emulsions,
+				Emulsion_Cfg {
+					dye          = dyes[i],
+					grain_radius = r,
+					grain_sigma  = s,
+					sigma_filter = f,
+					mtf_blur     = mtf_abs * 0.6,
+					mtf_blur_max = mtf_abs * 1.4,
+				},
 			)
-			strings.write_string(&sb, fmt.tprintf("grain_radius = %.4f\n", r))
-			strings.write_string(&sb, fmt.tprintf("grain_sigma = %.4f\n", s))
-			strings.write_string(&sb, fmt.tprintf("sigma_filter = %.4f\n", f))
-			strings.write_string(&sb, fmt.tprintf("mtf_blur = %.4f\n", mtf_abs * 0.6))
-			strings.write_string(&sb, fmt.tprintf("mtf_blur_max = %.4f\n", mtf_abs * 1.4))
+			append(&cfg.order, Config_Item {kind = .Emulsion, index = i})
 			if i < 2 {
-				strings.write_string(&sb, "\n[[filter]]\n")
-				strings.write_string(
-					&sb,
-					fmt.tprintf("color = [%d, %d, %d]\n", dyes[i][0], dyes[i][1], dyes[i][2]),
-				)
+				append(&cfg.filters, Filter_Cfg {color = dyes[i]})
+				append(&cfg.order, Config_Item {kind = .Filter, index = i})
 			}
-			strings.write_string(&sb, "\n")
 		}
 	}
-	strings.write_string(&sb, "[[film_base]]\n")
-	strings.write_string(&sb, fmt.tprintf("thickness = %.1f\n", thickness))
-	strings.write_string(&sb, "\n[[back]]\n")
-	strings.write_string(&sb, fmt.tprintf("reflectance = %.4f\n", reflectance))
-	return strings.clone(strings.to_string(sb))
+	append(&cfg.bases, Film_Base_Cfg {thickness = thickness})
+	append(&cfg.order, Config_Item {kind = .Film_Base, index = 0})
+	append(&cfg.backs, Back_Cfg {reflectance = reflectance})
+	append(&cfg.order, Config_Item {kind = .Back, index = 0})
+	return cfg
+}
+
+build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> (cfg: Film_Config, ok: bool) {
+	if opts.supersample == 0 {opts.supersample = 2}
+	if opts.gamma == 0 {opts.gamma = 2.4}
+	if opts.reflectance < 0 {opts.reflectance = 0.03}
+	if opts.thickness < 0 {opts.thickness = 20.0}
+	auto_mtf := opts.mtf
+	sharpness := content_sharpness(raw_data(pixels), w, h)
+	auto_res := compute_auto(sharpness, opts.height)
+	gr := auto_res.grain_radius
+	sf := auto_res.sigma_filter
+	gs := auto_res.grain_sigma
+	if for_video {
+		gr *= 2.2
+		sf *= 4.0
+		gs *= 2.0
+	}
+	info(fmt.tprintf("Content sharpness: %.2f", sharpness))
+	if opts.grain_radius < 0 {opts.grain_radius = gr}
+	if opts.grain_sigma < 0 {opts.grain_sigma = gs}
+	if opts.sigma_filter < 0 {opts.sigma_filter = sf}
+	if auto_mtf < 0 {
+		auto_mtf = auto_res.mtf_abs
+		if for_video {
+			auto_mtf *= 2.0
+		}
+	}
+	t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
+	avg, lo, hi := image_stats(pixels, w, h)
+	if opts.film == 0 {opts.film = 0.5 + 0.2 * t}
+	if opts.print_toe < 0 {opts.print_toe = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
+	if opts.print_shoulder < 0 {opts.print_shoulder = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
+	if opts.sat_lo < 0 {opts.sat_lo = 0.12 + 0.08 * (1.0 - avg)}
+	if opts.sat_hi < 0 {opts.sat_hi = 0.15 + 0.1 * t}
+	if opts.cross < 0 {opts.cross = 0.03}
+	opts.exposure = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35)
+	opts.contrast = clamp(1.15 - (hi - lo) * 0.3, 0.85, 1.15)
+	info(
+		fmt.tprintf(
+			"auto: grain R=%.3f SIG=%.3f F=%.3f MTF=%.3f print T=%.2f S=%.2f EXP=%.3f CON=%.2f",
+			opts.grain_radius,
+			opts.grain_sigma,
+			opts.sigma_filter,
+			auto_mtf,
+			opts.print_toe,
+			opts.print_shoulder,
+			opts.exposure,
+			opts.contrast,
+		),
+	)
+	cfg = build_auto_config(
+		opts.mode,
+		opts.thickness,
+		opts.reflectance,
+		opts.grain_radius,
+		opts.grain_sigma,
+		opts.sigma_filter,
+		auto_mtf,
+	)
+	return cfg, true
 }
 
