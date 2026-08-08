@@ -80,6 +80,8 @@ default_options :: proc() -> Options {
 		cross          = -1,
 		bitrate        = 60,
 		maxrate        = 100,
+		reciprocity    = 0.0,
+		negative       = false,
 		mode           = "color",
 	}
 }
@@ -124,6 +126,14 @@ set_u32_field :: proc(o: json.Object, key: string, dst: ^u32) {
 	if v, ok := o[key]; ok {
 		if x, xok := json_num_int(v); xok && x >= 0 {
 			dst^ = u32(x)
+		}
+	}
+}
+
+set_bool_field :: proc(o: json.Object, key: string, dst: ^bool) {
+	if v, ok := o[key]; ok {
+		if b, bok := v.(json.Boolean); bok {
+			dst^ = b
 		}
 	}
 }
@@ -243,6 +253,8 @@ parse_config_file :: proc(path: string) -> (cfg: Film_Config, opts: Options, ok:
 	set_f32_field(obj, "sat_lo", &opts.sat_lo)
 	set_f32_field(obj, "sat_hi", &opts.sat_hi)
 	set_f32_field(obj, "cross", &opts.cross)
+	set_f32_field(obj, "reciprocity", &opts.reciprocity)
+	set_bool_field(obj, "negative", &opts.negative)
 	set_str_field(obj, "device", &opts.device)
 
 	if v, ok2 := obj["emulsions"]; ok2 {

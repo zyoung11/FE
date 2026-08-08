@@ -109,6 +109,31 @@ Src_Data :: struct {
 	expo_w:    [3]f32,
 }
 
+// Schwarzschild reciprocity failure: layer sensitivity loss factors (B, G, R layers)
+recip_diff_for :: proc(layer: int) -> f32 {
+	switch layer % 3 {
+	case 0:
+		return 0.8
+	case 1:
+		return 0.9
+	}
+	return 1.0
+}
+
+Recip_Data :: struct {
+	src: []f32,
+	p:   f32,
+}
+
+recip_task :: proc(data: rawptr, i: int) {
+	d := cast(^Recip_Data)data
+	base := 1.0 - d.src[i]
+	if base > 0.001 && base < 0.999 {
+		expo := math.pow(base, 1.0 - d.p)
+		d.src[i] = 1.0 - math.pow(base, expo)
+	}
+}
+
 src_task :: proc(data: rawptr, i: int) {
 	d := cast(^Src_Data)data
 	lum :=
@@ -205,6 +230,7 @@ Out8_Data :: struct {
 	sat_lo:         f32,
 	sat_hi:         f32,
 	cross:          f32,
+	negative:       bool,
 }
 
 out8_task :: proc(data: rawptr, i: int) {
@@ -216,6 +242,23 @@ out8_task :: proc(data: rawptr, i: int) {
 	g = clamp((g - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
 	b = clamp((b - 0.5 + d.exposure * 0.5) * d.contrast + 0.5, 0.0, 1.0)
 	luma := 0.2126 * r + 0.7152 * g + 0.0722 * b
+	if d.negative {
+		toe := d.print_toe
+		if toe < 0 {toe = 0.3}
+		shoulder := d.print_shoulder
+		if shoulder < 0 {shoulder = 0.3}
+		y := print_curve(luma, toe, shoulder)
+		r = y + (r - luma)
+		g = y + (g - luma)
+		b = y + (b - luma)
+		mask_w := (1.0 - y) * (1.0 - y) * 0.5
+		r = r + mask_w * 0.12
+		b = b - mask_w * 0.08
+		nr := r * 1.02 - g * 0.02
+		nb := b * 0.98 + r * 0.02
+		r = nr
+		b = nb
+	}
 	sat_w := 1.0 - d.sat_lo * (1.0 - luma) * (1.0 - luma) - d.sat_hi * luma * luma
 	r = luma + (r - luma) * sat_w
 	g = luma + (g - luma) * sat_w
@@ -253,11 +296,15 @@ warn :: proc(msg: string) {fmt.printfln("%s[!]%s %s", YELLOW, RESET, msg)}
 progress_line :: proc(n: int, total: int, start: time.Time) {
 	elapsed := f32(time.duration_seconds(time.since(start)))
 	avg := elapsed / f32(max(1, n))
+	fps: f32 = 0
+	if avg > 0 {
+		fps = 1.0 / avg
+	}
 	if total > 0 {
 		eta := avg * f32(max(0, total - n))
-		fmt.printf("\r\x1b[2K%s[i]%s frame %d/%d (%.2fs/frame, elapsed %.1fs, ETA %.1fs)", BLUE, RESET, n, total, avg, elapsed, eta)
+		fmt.printf("\r\x1b[2K%s[i]%s frame %d/%d (%.2ffps, elapsed %.1fs, ETA %.1fs)", BLUE, RESET, n, total, fps, elapsed, eta)
 	} else {
-		fmt.printf("\r\x1b[2K%s[i]%s frame %d (%.2fs/frame, elapsed %.1fs)", BLUE, RESET, n, avg, elapsed)
+		fmt.printf("\r\x1b[2K%s[i]%s frame %d (%.2ffps, elapsed %.1fs)", BLUE, RESET, n, fps, elapsed)
 	}
 }
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
@@ -293,6 +340,8 @@ Options :: struct {
 	cross:          f32,
 	bitrate:        int,
 	maxrate:        int,
+	reciprocity:    f32,
+	negative:       bool,
 	mode:           string,
 }
 
@@ -609,6 +658,10 @@ render_frame :: proc(
 			}
 			absorb, expo_w := build_vectors(emu.dye)
 			parallel_for(n, &Src_Data{ray_front = ray_front, src = src, expo_w = expo_w}, src_task)
+			if opts.reciprocity > 0 {
+				p := 1.0 - opts.reciprocity * 0.2 * recip_diff_for(idx)
+				parallel_for(n, &Recip_Data{src = src, p = p}, recip_task)
+			}
 			ss := f32(opts.supersample)
 			r_px := emu.grain_radius * ss
 			sig_px := emu.grain_sigma * ss
@@ -795,7 +848,7 @@ render_frame :: proc(
 	if sh < 0 {sh = 0.2}
 	cr := opts.cross
 	if cr < 0 {cr = 0.05}
-	parallel_for(n, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast, film = opts.film, print_toe = pt, print_shoulder = ps, sat_lo = sl, sat_hi = sh, cross = cr}, out8_task)
+	parallel_for(n, &Out8_Data{final = final, out8 = out8, gamma = opts.gamma, exposure = opts.exposure, contrast = opts.contrast, film = opts.film, print_toe = pt, print_shoulder = ps, sat_lo = sl, sat_hi = sh, cross = cr, negative = opts.negative}, out8_task)
 	return out8, w_sim, h_sim, true
 }
 

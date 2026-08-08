@@ -20,6 +20,7 @@ Written in [Odin](https://odin-lang.org/), with CUDA acceleration via the driver
   - Halation: cosine-weighted light bounce through the film base with per-layer absorption
   - MTF softening (fixed or edge-adaptive Gaussian blur)
   - Film S-curve, print toe/shoulder, shadow/highlight desaturation, color cross, exposure/contrast grading
+  - Optional negative-film mode (orange mask, H&D curve) and Schwarzschild reciprocity failure (long-exposure shadow fog & warm cast)
 - **Two modes**
   - `auto` — content-adaptive configuration (analyzes sharpness and histogram, tunes grain, MTF, exposure, contrast automatically)
   - `config` — full manual control via a JSON configuration file
@@ -141,6 +142,8 @@ All render settings live in the JSON config file. A complete example is provided
 | `sat_lo` | float | `-1` (auto) | Shadow desaturation |
 | `sat_hi` | float | `-1` (auto) | Highlight desaturation |
 | `cross` | float | `-1` (auto) | Color cross coefficient |
+| `reciprocity` | float | `0` | Schwarzschild reciprocity failure strength (0 = off, 1 = max). Simulates long-exposure sensitivity loss: shadows gain fog and a warm cast (per-layer differences) |
+| `negative` | bool | `false` | Negative film mode: print toe/shoulder curve, warm orange mask residue in shadows, and a correction matrix for the color mask |
 | `bitrate` | int | `60` | Video average bitrate (Mbps) |
 | `maxrate` | int | `100` | Video peak bitrate (Mbps) |
 
