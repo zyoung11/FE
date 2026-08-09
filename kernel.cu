@@ -1,5 +1,10 @@
 extern "C" {
 
+// Per-channel penetration depth factors (red penetrates deepest)
+__constant__ float CHAN_DEPTH[3] = {1.25f, 1.0f, 0.8f};
+// Front-interface reflectance for the second bounce
+#define HALATION_R_FRONT 0.3f
+
 struct RenderParams {
 	unsigned width, height, n_samples, seed, y_offset;
 	float sigma_f, sigma, r2, sigma_ln, mu_ln, max_r, ag, lambda_fac;
@@ -169,29 +174,60 @@ __global__ void bounce_kernel(
 		if (dz < 1e-4f) {
 			continue;
 		}
-		float x_exit = x0 + dx * p.film_px / dz;
-		float y_exit = y0 + dy * p.film_px / dz;
-		int ix = (int)floorf(x_exit);
-		int iy = (int)floorf(y_exit);
-		if (ix < 0 || ix >= W || iy < 0 || iy >= H) {
-			continue;
-		}
-		int base = (iy * W + ix) * 3;
-		float col[3] = {__ldg(&front[base]), __ldg(&front[base + 1]), __ldg(&front[base + 2])};
-		for (unsigned l = 0u; l < p.n_layers; l++) {
-			float z_l = depth[l];
-			float x_l = x0 + dx * z_l / dz;
-			float y_l = y0 + dy * z_l / dz;
-			int ix_l = (int)floorf(x_l);
-			int iy_l = (int)floorf(y_l);
-			float dv = 1.0f;
-			if (ix_l >= 0 && ix_l < W && iy_l >= 0 && iy_l < H) {
-				dv = __ldg(&dens[(l * (unsigned)H + (unsigned)iy_l) * (unsigned)W + (unsigned)ix_l]);
+		float x1[3], y1[3];
+		float col[3] = {0.0f, 0.0f, 0.0f};
+		for (int c = 0; c < 3; c++) {
+			float fp = p.film_px * CHAN_DEPTH[c];
+			x1[c] = x0 + dx * fp / dz;
+			y1[c] = y0 + dy * fp / dz;
+			int ix = (int)floorf(x1[c]);
+			int iy = (int)floorf(y1[c]);
+			if (ix < 0 || ix >= W || iy < 0 || iy >= H) {
+				continue;
 			}
-			int ab = (int)l * 3;
-			col[0] *= 1.0f - absorb[ab] + absorb[ab] * dv;
-			col[1] *= 1.0f - absorb[ab + 1] + absorb[ab + 1] * dv;
-			col[2] *= 1.0f - absorb[ab + 2] + absorb[ab + 2] * dv;
+			col[c] = __ldg(&front[(iy * W + ix) * 3 + c]);
+			for (unsigned l = 0u; l < p.n_layers; l++) {
+				float z_l = depth[l] * CHAN_DEPTH[c];
+				float x_l = x0 + dx * z_l / dz;
+				float y_l = y0 + dy * z_l / dz;
+				int ix_l = (int)floorf(x_l);
+				int iy_l = (int)floorf(y_l);
+				float dv = 1.0f;
+				if (ix_l >= 0 && ix_l < W && iy_l >= 0 && iy_l < H) {
+					dv = __ldg(&dens[(l * (unsigned)H + (unsigned)iy_l) * (unsigned)W + (unsigned)ix_l]);
+				}
+				int ab = (int)l * 3;
+				col[c] *= 1.0f - absorb[ab + c] + absorb[ab + c] * dv;
+			}
+		}
+		float dx2, dy2, dz2;
+		hemi_cosine(&st, &dx2, &dy2, &dz2);
+		if (dz2 >= 1e-4f) {
+			for (int c = 0; c < 3; c++) {
+				float fp = p.film_px * CHAN_DEPTH[c];
+				float x2 = x1[c] + dx2 * fp / dz2;
+				float y2 = y1[c] + dy2 * fp / dz2;
+				int ix = (int)floorf(x2);
+				int iy = (int)floorf(y2);
+				if (ix < 0 || ix >= W || iy < 0 || iy >= H) {
+					continue;
+				}
+				float col2 = __ldg(&front[(iy * W + ix) * 3 + c]);
+				for (unsigned l = 0u; l < p.n_layers; l++) {
+					float z_l = depth[l] * CHAN_DEPTH[c];
+					float x_l = x1[c] + dx2 * z_l / dz2;
+					float y_l = y1[c] + dy2 * z_l / dz2;
+					int ix_l = (int)floorf(x_l);
+					int iy_l = (int)floorf(y_l);
+					float dv = 1.0f;
+					if (ix_l >= 0 && ix_l < W && iy_l >= 0 && iy_l < H) {
+						dv = __ldg(&dens[(l * (unsigned)H + (unsigned)iy_l) * (unsigned)W + (unsigned)ix_l]);
+					}
+					int ab = (int)l * 3;
+					col2 *= 1.0f - absorb[ab + c] + absorb[ab + c] * dv;
+				}
+				col[c] += col2 * HALATION_R_FRONT;
+			}
 		}
 		acc[0] += col[0];
 		acc[1] += col[1];

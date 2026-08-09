@@ -10,6 +10,19 @@ EPS :: 1e-5
 // Grain smoothing blur radius (px), used to remove white sampling noise in shadows
 GRAIN_SMOOTH_SIGMA :: 1.0
 
+// Per-channel penetration depth factors for halation (red penetrates deepest)
+halation_chan_depth :: proc(c: int) -> f32 {
+	switch c {
+	case 0:
+		return 1.25
+	case 1:
+		return 1.0
+	}
+	return 0.8
+}
+// Front-interface reflectance for the second halation bounce
+HALATION_R_FRONT :: 0.3
+
 Film_Params :: struct {
     r_px:       f32,
     sig_px:     f32,

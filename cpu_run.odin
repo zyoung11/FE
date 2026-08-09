@@ -255,29 +255,60 @@ bounce_band :: proc(task: thread.Task) {
 				if dir[2] < 1e-4 {
 					continue
 				}
-				x_exit := x0 + dir[0] * p.film_px / dir[2]
-				y_exit := y0 + dir[1] * p.film_px / dir[2]
-				ix := int(math.floor(x_exit))
-				iy := int(math.floor(y_exit))
-				if ix < 0 || ix >= w || iy < 0 || iy >= h {
-					continue
-				}
-				base := (iy * w + ix) * 3
-				col := [3]f32{band.front[base], band.front[base + 1], band.front[base + 2]}
-				for l in 0 ..< n_layers {
-					z_l := band.depth[l]
-					x_l := x0 + dir[0] * z_l / dir[2]
-					y_l := y0 + dir[1] * z_l / dir[2]
-					ix_l := int(math.floor(x_l))
-					iy_l := int(math.floor(y_l))
-					dv: f32 = 1.0
-					if ix_l >= 0 && ix_l < w && iy_l >= 0 && iy_l < h {
-						dv = band.dens[(l * h + iy_l) * w + ix_l]
+				x1: [3]f32
+				y1: [3]f32
+				col := [3]f32{0, 0, 0}
+				for c in 0 ..< 3 {
+					fp := p.film_px * halation_chan_depth(c)
+					x1[c] = x0 + dir[0] * fp / dir[2]
+					y1[c] = y0 + dir[1] * fp / dir[2]
+					ix := int(math.floor(x1[c]))
+					iy := int(math.floor(y1[c]))
+					if ix < 0 || ix >= w || iy < 0 || iy >= h {
+						continue
 					}
-					ab := l * 3
-					col[0] *= 1.0 - band.absorb[ab] + band.absorb[ab] * dv
-					col[1] *= 1.0 - band.absorb[ab + 1] + band.absorb[ab + 1] * dv
-					col[2] *= 1.0 - band.absorb[ab + 2] + band.absorb[ab + 2] * dv
+					col[c] = band.front[(iy * w + ix) * 3 + c]
+					for l in 0 ..< n_layers {
+						z_l := band.depth[l] * halation_chan_depth(c)
+						x_l := x0 + dir[0] * z_l / dir[2]
+						y_l := y0 + dir[1] * z_l / dir[2]
+						ix_l := int(math.floor(x_l))
+						iy_l := int(math.floor(y_l))
+						dv: f32 = 1.0
+						if ix_l >= 0 && ix_l < w && iy_l >= 0 && iy_l < h {
+							dv = band.dens[(l * h + iy_l) * w + ix_l]
+						}
+						ab := l * 3
+						col[c] *= 1.0 - band.absorb[ab + c] + band.absorb[ab + c] * dv
+					}
+				}
+				dir2 := hemi_cosine(&st)
+				if dir2[2] >= 1e-4 {
+					for c in 0 ..< 3 {
+						fp := p.film_px * halation_chan_depth(c)
+						x2 := x1[c] + dir2[0] * fp / dir2[2]
+						y2 := y1[c] + dir2[1] * fp / dir2[2]
+						ix := int(math.floor(x2))
+						iy := int(math.floor(y2))
+						if ix < 0 || ix >= w || iy < 0 || iy >= h {
+							continue
+						}
+						col2 := band.front[(iy * w + ix) * 3 + c]
+						for l in 0 ..< n_layers {
+							z_l := band.depth[l] * halation_chan_depth(c)
+							x_l := x1[c] + dir2[0] * z_l / dir2[2]
+							y_l := y1[c] + dir2[1] * z_l / dir2[2]
+							ix_l := int(math.floor(x_l))
+							iy_l := int(math.floor(y_l))
+							dv: f32 = 1.0
+							if ix_l >= 0 && ix_l < w && iy_l >= 0 && iy_l < h {
+								dv = band.dens[(l * h + iy_l) * w + ix_l]
+							}
+							ab := l * 3
+							col2 *= 1.0 - band.absorb[ab + c] + band.absorb[ab + c] * dv
+						}
+						col[c] += col2 * HALATION_R_FRONT
+					}
 				}
 				acc[0] += col[0]
 				acc[1] += col[1]

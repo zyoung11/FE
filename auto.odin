@@ -11,7 +11,7 @@ Auto_Result :: struct {
 	mtf_abs:      f32,
 }
 
-content_sharpness :: proc(pixels: [^]u8, w: int, h: int) -> f32 {
+content_sharpness :: proc(pixels: [^]u8, w: int, h: int, target_h: int) -> f32 {
 	gray_src := make([]u8, w * h)
 	defer delete(gray_src)
 	for i in 0 ..< w * h {
@@ -21,7 +21,7 @@ content_sharpness :: proc(pixels: [^]u8, w: int, h: int) -> f32 {
 			0.114 * f32(pixels[i * 3 + 2]),
 		)
 	}
-	scale := min(1.0, 256.0 / f32(max(w, h)))
+	scale := min(1.0, f32(target_h) / f32(max(w, h)))
 	tw := max(1, int(f32(w) * scale))
 	th := max(1, int(f32(h) * scale))
 	gray := make([]u8, tw * th)
@@ -60,10 +60,11 @@ content_sharpness :: proc(pixels: [^]u8, w: int, h: int) -> f32 {
 	return var_sum / f32(count)
 }
 
-compute_auto :: proc(sharpness: f32, height: int) -> Auto_Result {
-	t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
+compute_auto :: proc(sharpness: f32, t_mtf: f32, height: int) -> Auto_Result {
+	t := clamp((sharpness - 3.0) / 4.5, 0.0, 1.0)
 	g := (0.09 - 0.05 * t) / 10.0
-	m_mtf := min(1.8 - 0.8 * t, max(0.5, 0.0015 * f32(height)))
+	// MTF = 2.89 - 2.39*t: keeps the reference point (t=0.686 -> 1.25) while widening the range
+	m_mtf := min(2.89 - 2.39 * t_mtf, max(0.5, 0.003 * f32(height)))
 	return Auto_Result{grain_radius = g, grain_sigma = 0.001, sigma_filter = 0.004, mtf_abs = m_mtf}
 }
 
@@ -171,19 +172,20 @@ build_auto_config :: proc(
 build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> (cfg: Film_Config, ok: bool) {
 	if opts.supersample == 0 {opts.supersample = 2}
 	if opts.gamma == 0 {opts.gamma = 2.4}
-	if opts.reflectance < 0 {opts.reflectance = 0.03}
+	if opts.reflectance < 0 {opts.reflectance = 0.05}
 	if opts.thickness < 0 {opts.thickness = 20.0}
 	auto_mtf := opts.mtf
-	sharpness := content_sharpness(raw_data(pixels), w, h)
-	auto_res := compute_auto(sharpness, opts.height)
+	sharpness := content_sharpness(raw_data(pixels), w, h, opts.height)
+	w_out := max(1, int(f32(w) * f32(opts.height) / f32(h) + 0.5))
+	density := f32(w * h) / f32(w_out * opts.height)
+	t_mtf := clamp(-0.1194 * sharpness - 0.05 * density + 1.696, 0.0, 1.0)
+	auto_res := compute_auto(sharpness, t_mtf, opts.height)
 	gr := auto_res.grain_radius
 	sf := auto_res.sigma_filter
 	gs := auto_res.grain_sigma
-	if for_video {
-		gr *= 2.2
-		sf *= 4.0
-		gs *= 2.0
-	}
+	gr *= 2.2
+	sf *= 4.0
+	gs *= 2.0
 	info(fmt.tprintf("Content sharpness: %.2f", sharpness))
 	if opts.grain_radius < 0 {opts.grain_radius = gr}
 	if opts.grain_sigma < 0 {opts.grain_sigma = gs}
@@ -194,16 +196,17 @@ build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: i
 			auto_mtf *= 2.0
 		}
 	}
-	t := clamp((sharpness - 4.0) / 8.0, 0.0, 1.0)
+	t := clamp((sharpness - 3.0) / 4.5, 0.0, 1.0)
 	avg, lo, hi := image_stats(pixels, w, h)
 	if opts.film == 0 {opts.film = 0.5 + 0.2 * t}
 	if opts.print_toe < 0 {opts.print_toe = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
 	if opts.print_shoulder < 0 {opts.print_shoulder = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5)}
-	if opts.sat_lo < 0 {opts.sat_lo = 0.12 + 0.08 * (1.0 - avg)}
-	if opts.sat_hi < 0 {opts.sat_hi = 0.15 + 0.1 * t}
+	mtf_boost := max(0.0, 0.686 - t_mtf) * 0.25
+	if opts.sat_lo < 0 {opts.sat_lo = max(0.05, 0.12 + 0.08 * (1.0 - avg) - mtf_boost * 0.5)}
+	if opts.sat_hi < 0 {opts.sat_hi = max(0.05, 0.15 + 0.1 * t - mtf_boost * 0.5)}
 	if opts.cross < 0 {opts.cross = 0.03}
 	opts.exposure = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35)
-	opts.contrast = clamp(1.15 - (hi - lo) * 0.3, 0.85, 1.15)
+	opts.contrast = clamp(1.15 - (hi - lo) * 0.3 + mtf_boost, 0.85, 1.25)
 	info(
 		fmt.tprintf(
 			"auto: grain R=%.3f SIG=%.3f F=%.3f MTF=%.3f print T=%.2f S=%.2f EXP=%.3f CON=%.2f",
