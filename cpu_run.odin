@@ -54,19 +54,21 @@ parallel_for :: proc(n: int, data: rawptr, f: proc(data: rawptr, i: int)) {
 }
 
 Render_Params :: struct {
-	width:      u32,
-	height:     u32,
-	n_samples:  u32,
-	seed:       u32,
-	y_offset:   u32,
-	sigma_f:    f32,
-	sigma:      f32,
-	r2:         f32,
-	sigma_ln:   f32,
-	mu_ln:      f32,
-	max_r:      f32,
-	ag:         f32,
-	lambda_fac: f32,
+	width:       u32,
+	height:      u32,
+	n_samples:   u32,
+	seed:        u32,
+	y_offset:    u32,
+	sigma_f:     f32,
+	sigma:       f32,
+	r2:          f32,
+	sigma_ln:    f32,
+	mu_ln:       f32,
+	max_r:       f32,
+	ag:          f32,
+	lambda_fac:  f32,
+	frame_off_x: f32,
+	frame_off_y: f32,
 }
 
 Bounce_Params :: struct {
@@ -187,10 +189,12 @@ render_band :: proc(task: thread.Task) {
 			for _ in 0 ..< int(p.n_samples) {
 				g1 := rnd_gauss(&st)
 				g2 := rnd_gauss(&st)
-				xG := f32(px) + p.sigma_f * g1[0]
-				yG := f32(py) + p.sigma_f * g2[0]
-				ix := clamp(int(math.floor(xG)), 0, w - 1)
-				iy := clamp(int(math.floor(yG)), 0, int(p.height) - 1)
+				xS := f32(px) + p.sigma_f * g1[0]
+				yS := f32(py) + p.sigma_f * g2[0]
+				xG := xS + p.frame_off_x
+				yG := yS + p.frame_off_y
+				ix := clamp(int(math.floor(xS)), 0, w - 1)
+				iy := clamp(int(math.floor(yS)), 0, int(p.height) - 1)
 				u := clamp(band.src[iy * w + ix], 0.0, 1.0 - EPS)
 				lam := -p.lambda_fac * math.ln(1.0 - u)
 				decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)

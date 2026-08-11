@@ -8,6 +8,7 @@ __constant__ float CHAN_DEPTH[3] = {1.25f, 1.0f, 0.8f};
 struct RenderParams {
 	unsigned width, height, n_samples, seed, y_offset;
 	float sigma_f, sigma, r2, sigma_ln, mu_ln, max_r, ag, lambda_fac;
+	float frame_off_x, frame_off_y;
 };
 
 struct BounceParams {
@@ -86,13 +87,15 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		float g1x, g1y, g2x, g2y;
 		rnd_gauss(&st, &g1x, &g1y);
 		rnd_gauss(&st, &g2x, &g2y);
-		float xG = (float)px + p.sigma_f * g1x;
-		float yG = (float)py + p.sigma_f * g2x;
+		float xS = (float)px + p.sigma_f * g1x;
+		float yS = (float)py + p.sigma_f * g2x;
+		float xG = xS + p.frame_off_x;
+		float yG = yS + p.frame_off_y;
 
-		int ix = (int)floorf(xG);
+		int ix = (int)floorf(xS);
 		if (ix < 0) { ix = 0; }
 		if (ix > W - 1) { ix = W - 1; }
-		int iy = (int)floorf(yG);
+		int iy = (int)floorf(yS);
 		if (iy < 0) { iy = 0; }
 		if (iy > H - 1) { iy = H - 1; }
 		float u = __ldg(&src[iy * W + ix]);

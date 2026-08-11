@@ -371,18 +371,65 @@ detect_file_type :: proc(path: string) -> File_Type {
 	return .Unknown
 }
 
+read_file_wide :: proc(path: string) -> ([]u8, bool) {
+	wpath := utf8_to_wstring_own(path)
+	defer delete(wpath)
+	handle := windows.CreateFileW(
+		cast(windows.LPCWSTR)raw_data(wpath),
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+		nil,
+		windows.OPEN_EXISTING,
+		0,
+		nil,
+	)
+	if handle == windows.INVALID_HANDLE_VALUE {
+		return {}, false
+	}
+	defer windows.CloseHandle(handle)
+	size: windows.LARGE_INTEGER
+	if !windows.GetFileSizeEx(handle, &size) {
+		return {}, false
+	}
+	buf := make([]u8, int(size))
+	read: u32
+	if !windows.ReadFile(handle, raw_data(buf), u32(len(buf)), &read, nil) || read != u32(len(buf)) {
+		delete(buf)
+		return {}, false
+	}
+	return buf, true
+}
+
 write_image :: proc(path: string, data: []u8, w: int, h: int) -> bool {
-	output_cstr := strings.clone_to_cstring(path)
-	defer delete(output_cstr)
+	wpath := utf8_to_wstring_own(path)
+	defer delete(wpath)
+	handle := windows.CreateFileW(
+		cast(windows.LPCWSTR)raw_data(wpath),
+		windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ,
+		nil,
+		windows.CREATE_ALWAYS,
+		0,
+		nil,
+	)
+	if handle == windows.INVALID_HANDLE_VALUE {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+	write_file_cb :: proc "c" (ctx: rawptr, data: rawptr, size: c.int) {
+		h := cast(windows.HANDLE)ctx
+		written: u32
+		windows.WriteFile(h, data, u32(size), &written, nil)
+	}
 	ext := strings.to_lower(filepath.ext(path))
 	defer delete(ext)
 	switch ext {
 	case ".png":
-		return stb.write_png(output_cstr, c.int(w), c.int(h), 3, raw_data(data), c.int(w * 3)) != 0
+		return stb.write_png_to_func(write_file_cb, handle, c.int(w), c.int(h), 3, raw_data(data), c.int(w * 3)) != 0
 	case ".jpg", ".jpeg":
-		return stb.write_jpg(output_cstr, c.int(w), c.int(h), 3, raw_data(data), 90) != 0
+		return stb.write_jpg_to_func(write_file_cb, handle, c.int(w), c.int(h), 3, raw_data(data), 90) != 0
 	case ".bmp":
-		return stb.write_bmp(output_cstr, c.int(w), c.int(h), 3, raw_data(data)) != 0
+		return stb.write_bmp_to_func(write_file_cb, handle, c.int(w), c.int(h), 3, raw_data(data)) != 0
 	}
 	return false
 }
@@ -470,11 +517,15 @@ main :: proc() {
 	if opts.height <= 0 {
 		opts.height = 1080
 	}
-	input_cstr := strings.clone_to_cstring(cli.input)
-	defer delete(input_cstr)
+	input_bytes, iok := read_file_wide(cli.input)
+	if !iok {
+		fail(fmt.tprintf("Failed to read image: %s", cli.input))
+		os.exit(1)
+	}
+	defer delete(input_bytes)
 	w, h, ch: c.int
 	t := time.now()
-	pixels := stb.load(input_cstr, &w, &h, &ch, 3)
+	pixels := stb.load_from_memory(raw_data(input_bytes), c.int(len(input_bytes)), &w, &h, &ch, 3)
 	if pixels == nil {
 		fail(fmt.tprintf("Failed to read image: %s", cli.input))
 		os.exit(1)
@@ -499,7 +550,7 @@ main :: proc() {
 	defer sim_cleanup(&ctx)
 	t = stage_time("Renderer init", t)
 
-	out8, out_w, out_h, rok := render_frame(&ctx, &opts, &cfg, pixels[:int(w) * int(h) * 3], int(w), int(h), opts.seed, &t, true)
+	out8, out_w, out_h, rok := render_frame(&ctx, &opts, &cfg, pixels[:int(w) * int(h) * 3], int(w), int(h), opts.seed, 0, &t, true)
 	if !rok {
 		fail("Render failed")
 		os.exit(1)
@@ -582,6 +633,7 @@ render_frame :: proc(
 	fw: int,
 	fh: int,
 	frame_seed: u32,
+	frame_idx: int,
 	t: ^time.Time,
 	verbose: bool,
 ) -> ([]u8, int, int, bool) {
@@ -709,18 +761,20 @@ render_frame :: proc(
 				)
 			}
 			render_params := Render_Params {
-				width      = u32(w_sim),
-				height     = u32(h_sim),
-				n_samples  = u32(opts.samples),
-				seed       = frame_seed + u32(idx) * 19,
-				sigma_f    = params.sig_f_px,
-				sigma      = params.sig_px,
-				r2         = params.r2,
-				sigma_ln   = params.sigma_ln,
-				mu_ln      = params.mu_ln,
-				max_r      = params.max_r,
-				ag         = params.ag,
-				lambda_fac = params.lambda_fac,
+				width       = u32(w_sim),
+				height      = u32(h_sim),
+				n_samples   = u32(opts.samples),
+				seed        = frame_seed + u32(idx) * 19,
+				sigma_f     = params.sig_f_px,
+				sigma       = params.sig_px,
+				r2          = params.r2,
+				sigma_ln    = params.sigma_ln,
+				mu_ln       = params.mu_ln,
+				max_r       = params.max_r,
+				ag          = params.ag,
+				lambda_fac  = params.lambda_fac,
+				frame_off_x = math.sin(f32(frame_idx) * 0.7) * 0.12,
+				frame_off_y = math.cos(f32(frame_idx) * 0.9) * 0.12,
 			}
 			t^ = stage_time(fmt.tprintf("[emu %d] CPU preprocess", idx), t^, verbose)
 			if !dispatch_render(ctx, render_params, src, neg) {
@@ -892,7 +946,7 @@ render_worker_main :: proc(t: ^thread.Thread) {
 			break
 		}
 		tt := time.now()
-		out8, _, _, rok := render_frame(&w.ctx, w.opts, w.cfg, task.data, w.fw, w.fh, w.seed_base + u32(task.frame) * 6743, &tt, false)
+			out8, _, _, rok := render_frame(&w.ctx, w.opts, w.cfg, task.data, w.fw, w.fh, w.seed_base, task.frame, &tt, false)
 		delete(task.data)
 		if !rok {
 			fail("Frame render failed")
