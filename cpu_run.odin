@@ -187,10 +187,14 @@ render_band :: proc(task: thread.Task) {
 			st := wang(u32(py) * 73856093 ~ u32(px) * 19349663 ~ fseed)
 			hit: f32 = 0
 			for _ in 0 ..< int(p.n_samples) {
-				g1 := rnd_gauss(&st)
-				g2 := rnd_gauss(&st)
-				xS := f32(px) + p.sigma_f * g1[0]
-				yS := f32(py) + p.sigma_f * g2[0]
+				xS := f32(px)
+				yS := f32(py)
+				if p.sigma_f > 1e-4 {
+					g1 := rnd_gauss(&st)
+					g2 := rnd_gauss(&st)
+					xS += p.sigma_f * g1[0]
+					yS += p.sigma_f * g2[0]
+				}
 				xG := xS + p.frame_off_x
 				yG := yS + p.frame_off_y
 				ix := clamp(int(math.floor(xS)), 0, w - 1)
@@ -455,16 +459,6 @@ cpu_dispatch_bounce :: proc(
 	return true
 }
 
-dispatch_render :: proc(ctx: ^Compute_Context, params: Render_Params, src: []f32, neg: []f32, src_on_device: bool) -> bool {
-	switch ctx.mode {
-	case .Cuda:
-		return cuda_dispatch_render(&ctx.cuda, params, src, neg, src_on_device)
-	case .Cpu:
-		return cpu_dispatch_render(ctx, params, src, neg)
-	}
-	return false
-}
-
 dispatch_bounce :: proc(
 	ctx: ^Compute_Context,
 	params: Bounce_Params,
@@ -474,11 +468,5 @@ dispatch_bounce :: proc(
 	absorb: []f32,
 	depth: []f32,
 ) -> bool {
-	switch ctx.mode {
-	case .Cuda:
-		return cuda_dispatch_bounce(&ctx.cuda, params, front, bounced, dens, absorb, depth)
-	case .Cpu:
-		return cpu_dispatch_bounce(ctx, params, front, bounced, dens, absorb, depth)
-	}
-	return false
+	return cpu_dispatch_bounce(ctx, params, front, bounced, dens, absorb, depth)
 }

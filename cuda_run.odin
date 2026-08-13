@@ -57,8 +57,24 @@ Cuda_Context :: struct {
 	sum_fn:      CUfunction,
 	sum_final_fn: CUfunction,
 	blend_fn:    CUfunction,
+	linearize_fn: CUfunction,
+	src_fn:      CUfunction,
+	recip_fn:    CUfunction,
+	front_update_fn: CUfunction,
+	filter_fn:   CUfunction,
+	assemble_fn: CUfunction,
+	min_fn:      CUfunction,
+	hdr_fn:      CUfunction,
+	final_fn:    CUfunction,
+	out8_fn:     CUfunction,
+	box_down3_fn: CUfunction,
+	box_down_planes_fn: CUfunction,
+	bilinear_up3_fn: CUfunction,
+	img_f32:     u64,
+	img_u8:      u64,
+	bw:          u32,
+	bh:          u32,
 	d_src:       CUdeviceptr,
-	d_neg:       CUdeviceptr,
 	d_front:     CUdeviceptr,
 	d_bounced:   CUdeviceptr,
 	d_dens:      CUdeviceptr,
@@ -71,6 +87,14 @@ Cuda_Context :: struct {
 	d_blur_max:  CUdeviceptr,
 	d_sum:       CUdeviceptr,
 	d_blur_kernel: CUdeviceptr,
+	d_ray_front: CUdeviceptr,
+	d_front_smooth: CUdeviceptr,
+	d_front_hdr: CUdeviceptr,
+	d_input:     CUdeviceptr,
+	d_out8:      CUdeviceptr,
+	d_front_low: CUdeviceptr,
+	d_bounced_low: CUdeviceptr,
+	d_dens_low:  CUdeviceptr,
 }
 
 cuda_error_string :: proc(result: CUresult) -> string {
@@ -191,7 +215,20 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_module_get_function(&c.tmap_fn, c.module, "tmap_kernel") != 0 ||
 	   cu_module_get_function(&c.sum_fn, c.module, "sum_kernel") != 0 ||
 	   cu_module_get_function(&c.sum_final_fn, c.module, "sum_final_kernel") != 0 ||
-	   cu_module_get_function(&c.blend_fn, c.module, "blend_kernel") != 0 {
+	   cu_module_get_function(&c.blend_fn, c.module, "blend_kernel") != 0 ||
+	   cu_module_get_function(&c.linearize_fn, c.module, "linearize_kernel") != 0 ||
+	   cu_module_get_function(&c.src_fn, c.module, "src_kernel") != 0 ||
+	   cu_module_get_function(&c.recip_fn, c.module, "recip_kernel") != 0 ||
+	   cu_module_get_function(&c.front_update_fn, c.module, "front_update_kernel") != 0 ||
+	   cu_module_get_function(&c.filter_fn, c.module, "filter_kernel") != 0 ||
+	   cu_module_get_function(&c.assemble_fn, c.module, "assemble_kernel") != 0 ||
+	   cu_module_get_function(&c.min_fn, c.module, "min_kernel") != 0 ||
+	   cu_module_get_function(&c.hdr_fn, c.module, "hdr_kernel") != 0 ||
+	   cu_module_get_function(&c.final_fn, c.module, "final_kernel") != 0 ||
+	   cu_module_get_function(&c.out8_fn, c.module, "out8_kernel") != 0 ||
+	   cu_module_get_function(&c.box_down3_fn, c.module, "box_down3_kernel") != 0 ||
+	   cu_module_get_function(&c.box_down_planes_fn, c.module, "box_down_planes_kernel") != 0 ||
+	   cu_module_get_function(&c.bilinear_up3_fn, c.module, "bilinear_up3_kernel") != 0 {
 		warn("CUDA kernel lookup failed, falling back to CPU")
 		return false
 	}
@@ -199,8 +236,13 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	img_size := u64(w) * u64(h) * size_of(f32)
 	rgb_size := img_size * 3
 	layer_size := u64(max_layers) * img_size
+	c.img_f32 = img_size
+	c.img_u8 = u64(w) * u64(h) * 3
+	c.bw = max(u32(1), w / 4)
+	c.bh = max(u32(1), h / 4)
+	low_rgb := u64(c.bw) * u64(c.bh) * 3 * size_of(f32)
+	low_layer := u64(max_layers) * u64(c.bw) * u64(c.bh) * size_of(f32)
 	if cu_mem_alloc(&c.d_src, img_size) != 0 ||
-	   cu_mem_alloc(&c.d_neg, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_front, rgb_size) != 0 ||
 	   cu_mem_alloc(&c.d_bounced, rgb_size) != 0 ||
 	   cu_mem_alloc(&c.d_dens, layer_size) != 0 ||
@@ -212,7 +254,15 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 	   cu_mem_alloc(&c.d_blur_min, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_blur_max, img_size) != 0 ||
 	   cu_mem_alloc(&c.d_sum, u64((w * h + 255) / 256) * 4 + 4) != 0 ||
-	   cu_mem_alloc(&c.d_blur_kernel, 256) != 0 {
+	   cu_mem_alloc(&c.d_blur_kernel, 256) != 0 ||
+	   cu_mem_alloc(&c.d_ray_front, rgb_size) != 0 ||
+	   cu_mem_alloc(&c.d_front_smooth, rgb_size) != 0 ||
+	   cu_mem_alloc(&c.d_front_hdr, rgb_size) != 0 ||
+	   cu_mem_alloc(&c.d_input, c.img_u8) != 0 ||
+	   cu_mem_alloc(&c.d_out8, c.img_u8) != 0 ||
+	   cu_mem_alloc(&c.d_front_low, low_rgb) != 0 ||
+	   cu_mem_alloc(&c.d_bounced_low, low_rgb) != 0 ||
+	   cu_mem_alloc(&c.d_dens_low, low_layer) != 0 {
 		warn("CUDA memory allocation failed, falling back to CPU")
 		cuda_cleanup(c)
 		return false
@@ -221,6 +271,14 @@ cuda_init :: proc(c: ^Cuda_Context, w: u32, h: u32, max_layers: u32, ordinal: in
 }
 
 cuda_cleanup :: proc(c: ^Cuda_Context) {
+	if c.d_dens_low != 0 {cu_mem_free(c.d_dens_low)}
+	if c.d_bounced_low != 0 {cu_mem_free(c.d_bounced_low)}
+	if c.d_front_low != 0 {cu_mem_free(c.d_front_low)}
+	if c.d_out8 != 0 {cu_mem_free(c.d_out8)}
+	if c.d_input != 0 {cu_mem_free(c.d_input)}
+	if c.d_front_hdr != 0 {cu_mem_free(c.d_front_hdr)}
+	if c.d_front_smooth != 0 {cu_mem_free(c.d_front_smooth)}
+	if c.d_ray_front != 0 {cu_mem_free(c.d_ray_front)}
 	if c.d_blur_kernel != 0 {cu_mem_free(c.d_blur_kernel)}
 	if c.d_sum != 0 {cu_mem_free(c.d_sum)}
 	if c.d_blur_max != 0 {cu_mem_free(c.d_blur_max)}
@@ -233,41 +291,42 @@ cuda_cleanup :: proc(c: ^Cuda_Context) {
 	if c.d_dens != 0 {cu_mem_free(c.d_dens)}
 	if c.d_bounced != 0 {cu_mem_free(c.d_bounced)}
 	if c.d_front != 0 {cu_mem_free(c.d_front)}
-	if c.d_neg != 0 {cu_mem_free(c.d_neg)}
 	if c.d_src != 0 {cu_mem_free(c.d_src)}
 	if c.module != nil {cu_module_unload(c.module)}
 	if c.ctx != nil {cu_ctx_destroy(c.ctx)}
-	c.d_src = 0
-	c.d_neg = 0
-	c.d_front = 0
-	c.d_bounced = 0
-	c.d_dens = 0
-	c.d_absorb = 0
-	c.d_depth = 0
-	c.d_blur_src = 0
-	c.d_blur_tmp = 0
-	c.d_lap = 0
-	c.d_blur_min = 0
-	c.d_blur_max = 0
-	c.d_sum = 0
+	c.d_dens_low = 0
+	c.d_bounced_low = 0
+	c.d_front_low = 0
+	c.d_out8 = 0
+	c.d_input = 0
+	c.d_front_hdr = 0
+	c.d_front_smooth = 0
+	c.d_ray_front = 0
 	c.d_blur_kernel = 0
+	c.d_sum = 0
+	c.d_blur_max = 0
+	c.d_blur_min = 0
+	c.d_lap = 0
+	c.d_blur_tmp = 0
+	c.d_blur_src = 0
+	c.d_depth = 0
+	c.d_absorb = 0
+	c.d_dens = 0
+	c.d_bounced = 0
+	c.d_front = 0
+	c.d_src = 0
 	c.module = nil
 	c.ctx = nil
 }
 
-cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32, neg: []f32, src_on_device: bool) -> bool {
-	src_ptr := c.d_src
-	if src_on_device {
-		src_ptr = c.d_blur_src
-	} else if res := cu_memcpy_htod(c.d_src, raw_data(src), u64(len(src)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return false
-	}
+cuda_render_kernel :: proc(c: ^Cuda_Context, params: Render_Params, src: CUdeviceptr, dst: CUdeviceptr) -> bool {
 	p := params
 	p.y_offset = 0
+	src_v := src
+	dst_v := dst
 	grid_x := (params.width + 15) / 16
 	grid_y := (params.height + 15) / 16
-	args := [3]rawptr{&src_ptr, &c.d_neg, &p}
+	args := [3]rawptr{&src_v, &dst_v, &p}
 	if res := cu_launch_kernel(
 		c.render_fn,
 		grid_x, grid_y, 1,
@@ -279,47 +338,28 @@ cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32
 		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
 		return false
 	}
-	if res := cu_ctx_synchronize(); res != 0 {
-		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_memcpy_dtoh(raw_data(neg), c.d_neg, u64(len(neg)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyDtoH: %s", cuda_error_string(res)))
-		return false
-	}
 	return true
 }
 
-cuda_dispatch_bounce :: proc(
+cuda_bounce_kernel :: proc(
 	c: ^Cuda_Context,
 	params: Bounce_Params,
-	front: []f32,
-	bounced: []f32,
-	dens: []f32,
-	absorb: []f32,
-	depth: []f32,
+	front: CUdeviceptr,
+	bounced: CUdeviceptr,
+	dens: CUdeviceptr,
+	absorb: CUdeviceptr,
+	depth: CUdeviceptr,
 ) -> bool {
-	if res := cu_memcpy_htod(c.d_front, raw_data(front), u64(len(front)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_memcpy_htod(c.d_dens, raw_data(dens), u64(len(dens)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_memcpy_htod(c.d_absorb, raw_data(absorb), u64(len(absorb)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_memcpy_htod(c.d_depth, raw_data(depth), u64(len(depth)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return false
-	}
 	p := params
 	p.y_offset = 0
 	grid_x := (params.width + 15) / 16
 	grid_y := (params.height + 15) / 16
-	args := [6]rawptr{&c.d_front, &c.d_bounced, &c.d_dens, &c.d_absorb, &c.d_depth, &p}
+	front_v := front
+	bounced_v := bounced
+	dens_v := dens
+	absorb_v := absorb
+	depth_v := depth
+	args := [6]rawptr{&front_v, &bounced_v, &dens_v, &absorb_v, &depth_v, &p}
 	if res := cu_launch_kernel(
 		c.bounce_fn,
 		grid_x, grid_y, 1,
@@ -329,14 +369,6 @@ cuda_dispatch_bounce :: proc(
 	); res != 0 {
 		cu_ctx_synchronize()
 		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_ctx_synchronize(); res != 0 {
-		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
-		return false
-	}
-	if res := cu_memcpy_dtoh(raw_data(bounced), c.d_bounced, u64(len(bounced)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyDtoH: %s", cuda_error_string(res)))
 		return false
 	}
 	return true
@@ -402,69 +434,37 @@ cuda_launch_gauss :: proc(c: ^Cuda_Context, src: CUdeviceptr, dst: CUdeviceptr, 
 	return true
 }
 
-cuda_gauss_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma: f32, keep_on_device := false) -> ([]f32, bool) {
-	if sigma <= 0 {
-		out := make([]f32, len(src))
-		copy(out, src)
-		return out, true
-	}
-	if res := cu_memcpy_htod(c.d_blur_src, raw_data(src), u64(len(src)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return nil, false
-	}
+cuda_gauss_blur_device :: proc(c: ^Cuda_Context, src: CUdeviceptr, dst: CUdeviceptr, w: u32, h: u32, sigma: f32) -> bool {
 	r, ok := cuda_upload_gauss_kernel(c, sigma)
 	if !ok {
-		return nil, false
+		return false
 	}
-	if !cuda_launch_gauss(c, c.d_blur_src, c.d_blur_src, w, h, r) {
-		return nil, false
-	}
-	if res := cu_ctx_synchronize(); res != 0 {
-		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	if keep_on_device {
-		return nil, true
-	}
-	out := make([]f32, len(src))
-	if res := cu_memcpy_dtoh(raw_data(out), c.d_blur_src, u64(len(out)) * size_of(f32)); res != 0 {
-		delete(out)
-		fail(fmt.tprintf("cuMemcpyDtoH: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	return out, true
+	return cuda_launch_gauss(c, src, dst, w, h, r)
 }
 
-cuda_adaptive_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma_min: f32, sigma_max: f32) -> ([]f32, bool) {
+cuda_adaptive_blur_device :: proc(c: ^Cuda_Context, src: CUdeviceptr, dst: CUdeviceptr, w: u32, h: u32, sigma_min: f32, sigma_max: f32) -> bool {
 	if sigma_max <= sigma_min {
-		return cuda_gauss_blur(c, src, w, h, sigma_max)
+		return cuda_gauss_blur_device(c, src, dst, w, h, sigma_max)
 	}
 	n := w * h
 	w_v := w
 	h_v := h
-	if res := cu_memcpy_htod(c.d_blur_src, raw_data(src), u64(len(src)) * size_of(f32)); res != 0 {
-		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	args := [4]rawptr{&c.d_blur_src, &c.d_lap, &w_v, &h_v}
+	src_v := src
+	args := [4]rawptr{&src_v, &c.d_lap, &w_v, &h_v}
 	if !cuda_launch_1d(c, c.lap_fn, n, &args[0]) {
-		return nil, false
+		return false
 	}
 	r, ok := cuda_upload_gauss_kernel(c, max(sigma_min * 2.0, 2.0))
 	if !ok {
-		return nil, false
+		return false
 	}
 	if !cuda_launch_gauss(c, c.d_lap, c.d_lap, w, h, r) {
-		return nil, false
-	}
-	if res := cu_memset_d32(c.d_sum, 0, 1); res != 0 {
-		fail(fmt.tprintf("cuMemsetD32: %s", cuda_error_string(res)))
-		return nil, false
+		return false
 	}
 	blocks := (n + 255) / 256
 	args2 := [3]rawptr{&c.d_lap, &c.d_sum, &n}
 	if !cuda_launch_1d(c, c.sum_fn, n, &args2[0]) {
-		return nil, false
+		return false
 	}
 	sf_args := [3]rawptr{&c.d_sum, &c.d_sum, &blocks}
 	if res := cu_launch_kernel(
@@ -476,45 +476,27 @@ cuda_adaptive_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma_m
 	); res != 0 {
 		cu_ctx_synchronize()
 		fail(fmt.tprintf("cuLaunchKernel: %s", cuda_error_string(res)))
-		return nil, false
+		return false
 	}
-	mean_host: f32
-	if res := cu_memcpy_dtoh(&mean_host, c.d_sum, 4); res != 0 {
-		fail(fmt.tprintf("cuMemcpyDtoH: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	mean := mean_host / f32(n)
-	args3 := [4]rawptr{&c.d_lap, &c.d_lap, &mean, &n}
+	args3 := [4]rawptr{&c.d_lap, &c.d_lap, &c.d_sum, &n}
 	if !cuda_launch_1d(c, c.tmap_fn, n, &args3[0]) {
-		return nil, false
+		return false
 	}
 	r2, ok2 := cuda_upload_gauss_kernel(c, sigma_min)
 	if !ok2 {
-		return nil, false
+		return false
 	}
-	if !cuda_launch_gauss(c, c.d_blur_src, c.d_blur_min, w, h, r2) {
-		return nil, false
+	if !cuda_launch_gauss(c, src, c.d_blur_min, w, h, r2) {
+		return false
 	}
 	r3, ok3 := cuda_upload_gauss_kernel(c, sigma_max)
 	if !ok3 {
-		return nil, false
+		return false
 	}
-	if !cuda_launch_gauss(c, c.d_blur_src, c.d_blur_max, w, h, r3) {
-		return nil, false
+	if !cuda_launch_gauss(c, src, c.d_blur_max, w, h, r3) {
+		return false
 	}
-	args4 := [5]rawptr{&c.d_blur_min, &c.d_blur_max, &c.d_lap, &c.d_blur_src, &n}
-	if !cuda_launch_1d(c, c.blend_fn, n, &args4[0]) {
-		return nil, false
-	}
-	if res := cu_ctx_synchronize(); res != 0 {
-		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	out := make([]f32, len(src))
-	if res := cu_memcpy_dtoh(raw_data(out), c.d_blur_src, u64(len(out)) * size_of(f32)); res != 0 {
-		delete(out)
-		fail(fmt.tprintf("cuMemcpyDtoH: %s", cuda_error_string(res)))
-		return nil, false
-	}
-	return out, true
+	dst_v := dst
+	args4 := [5]rawptr{&c.d_blur_min, &c.d_blur_max, &c.d_lap, &dst_v, &n}
+	return cuda_launch_1d(c, c.blend_fn, n, &args4[0])
 }

@@ -434,6 +434,31 @@ write_image :: proc(path: string, data: []u8, w: int, h: int) -> bool {
 	return false
 }
 
+parse_device_choice :: proc(device: string) -> (Device_Choice, bool) {
+	choice: Device_Choice
+	switch device {
+	case "auto":
+		choice.kind = .Auto
+	case "cpu":
+		choice.kind = .Cpu
+	case "cuda":
+		choice.kind = .Cuda
+		choice.ordinal = 0
+	case:
+		if strings.has_prefix(device, "cuda:") {
+			n, ok := strconv.parse_int(device[5:])
+			if !ok || n < 0 {
+				return {}, false
+			}
+			choice.kind = .Cuda
+			choice.ordinal = n
+		} else {
+			return {}, false
+		}
+	}
+	return choice, true
+}
+
 main :: proc() {
 	when ODIN_OS == .Windows {
 		windows.SetConsoleOutputCP(windows.CODEPAGE(65001))
@@ -486,32 +511,9 @@ main :: proc() {
 	if cli.mode != "" {
 		opts.mode = cli.mode
 	}
-	device_choice: Device_Choice
-	switch opts.device {
-	case "auto":
-		device_choice.kind = .Auto
-	case "cpu":
-		device_choice.kind = .Cpu
-	case "cuda":
-		device_choice.kind = .Cuda
-		device_choice.ordinal = 0
-	case:
-		if strings.has_prefix(opts.device, "cuda:") {
-			n, ok := strconv.parse_int(opts.device[5:])
-			if !ok || n < 0 {
-				fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
-				os.exit(1)
-			}
-			device_choice.kind = .Cuda
-			device_choice.ordinal = n
-		} else {
-			fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
-			os.exit(1)
-		}
-	}
 
 	if in_type == .Video {
-		run_video(&opts, &cli, device_choice)
+		run_video(&opts, &cli)
 		return
 	}
 	if opts.height <= 0 {
@@ -540,6 +542,11 @@ main :: proc() {
 	}
 	defer destroy_film_config(&cfg)
 	t = stage_time("Config parse", t)
+	device_choice, dok := parse_device_choice(opts.device)
+	if !dok {
+		fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
+		os.exit(1)
+	}
 	h_sim := opts.height * opts.supersample
 	w_sim := max(1, int(f32(w) * f32(h_sim) / f32(h) + 0.5))
 	ctx: Compute_Context
@@ -582,6 +589,71 @@ main :: proc() {
 	}
 	success(fmt.tprintf("Saved %s", cli.output))
 	success(fmt.tprintf("Total time %s", time.since(start)))
+}
+
+Emu_Prep :: struct {
+	dye:       [3]u8,
+	absorb:    [3]f32,
+	expo_w:    [3]f32,
+	params:    Render_Params,
+	sigma_mtf: f32,
+	mtf_max:   f32,
+	r_px:      f32,
+}
+
+prep_emulsion :: proc(opts: ^Options, emu_in: Emulsion_Cfg, ss: f32, frame_seed: u32, idx: int, frame_idx: int, w_sim: int, h_sim: int) -> Emu_Prep {
+	emu := emu_in
+	if opts.grain_radius >= 0 {
+		emu.grain_radius = opts.grain_radius
+	}
+	if opts.grain_sigma >= 0 {
+		emu.grain_sigma = opts.grain_sigma
+	}
+	if opts.sigma_filter >= 0 {
+		emu.sigma_filter = opts.sigma_filter
+	}
+	absorb, expo_w := build_vectors(emu.dye)
+	r_px := emu.grain_radius * ss
+	sig_px := emu.grain_sigma * ss
+	sig_f := emu.sigma_filter * ss
+	mtf := emu.mtf_blur
+	sigma_mtf := r_px / math.SQRT_TWO
+	if mtf != nil {
+		sigma_mtf = mtf.? * ss
+	}
+	mtf_max := emu.mtf_blur_max
+	if mtf_max == nil {
+		mtf_max = mtf
+	}
+	max_v := f32(-1)
+	if mtf_max != nil {
+		max_v = mtf_max.? * ss
+	}
+	params := prep_physics(r_px, sig_px, sig_f)
+	return Emu_Prep {
+		dye       = emu.dye,
+		absorb    = absorb,
+		expo_w    = expo_w,
+		sigma_mtf = sigma_mtf,
+		mtf_max   = max_v,
+		r_px      = r_px,
+		params    = Render_Params {
+			width       = u32(w_sim),
+			height      = u32(h_sim),
+			n_samples   = u32(opts.samples),
+			seed        = frame_seed + u32(idx) * 19,
+			sigma_f     = params.sig_f_px,
+			sigma       = params.sig_px,
+			r2          = params.r2,
+			sigma_ln    = params.sigma_ln,
+			mu_ln       = params.mu_ln,
+			max_r       = params.max_r,
+			ag          = params.ag,
+			lambda_fac  = params.lambda_fac,
+			frame_off_x = math.sin(f32(frame_idx) * 0.7) * 0.12,
+			frame_off_y = math.cos(f32(frame_idx) * 0.9) * 0.12,
+		},
+	}
 }
 
 resolve_config :: proc(
@@ -659,6 +731,9 @@ render_frame :: proc(
 	} else {
 		copy(resized, input[:fw * fh * 3])
 	}
+	if ctx.mode == .Cuda {
+		return render_frame_cuda(ctx, opts, cfg, resized, w_sim, h_sim, frame_seed, frame_idx, t, verbose)
+	}
 
 	n := w_sim * h_sim
 	ray_front := make([]f32, n * 3)
@@ -698,100 +773,49 @@ render_frame :: proc(
 	for item, idx in cfg.order {
 		switch item.kind {
 		case .Emulsion:
-			emu := cfg.emulsions[item.index]
-			if opts.grain_radius >= 0 {
-				emu.grain_radius = opts.grain_radius
-			}
-			if opts.grain_sigma >= 0 {
-				emu.grain_sigma = opts.grain_sigma
-			}
-			if opts.sigma_filter >= 0 {
-				emu.sigma_filter = opts.sigma_filter
-			}
-			absorb, expo_w := build_vectors(emu.dye)
-			parallel_for(n, &Src_Data{ray_front = ray_front, src = src, expo_w = expo_w}, src_task)
+			prep := prep_emulsion(opts, cfg.emulsions[item.index], f32(opts.supersample), frame_seed, idx, frame_idx, w_sim, h_sim)
+			parallel_for(n, &Src_Data{ray_front = ray_front, src = src, expo_w = prep.expo_w}, src_task)
 			if opts.reciprocity > 0 {
 				p := 1.0 - opts.reciprocity * 0.2 * recip_diff_for(idx)
 				parallel_for(n, &Recip_Data{src = src, p = p}, recip_task)
 			}
-			ss := f32(opts.supersample)
-			r_px := emu.grain_radius * ss
-			sig_px := emu.grain_sigma * ss
-			sig_f := emu.sigma_filter * ss
-			mtf := emu.mtf_blur
-			sigma_mtf := r_px / math.SQRT_TWO
-			if mtf != nil {
-				sigma_mtf = mtf.? * ss
-			}
-			mtf_max := emu.mtf_blur_max
-			if mtf_max == nil {
-				mtf_max = mtf
-			}
-			src_on_device := ctx.mode == .Cuda && sigma_mtf > 0
-			if mtf_max == nil || mtf_max.? <= mtf.? {
-				if sigma_mtf > 0 {
-					blurred, ok := gauss_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, src_on_device)
-					if !ok {
-						fail("Gaussian blur failed")
-						return nil, 0, 0, false
-					}
+			if prep.mtf_max < 0 || prep.mtf_max <= prep.sigma_mtf {
+				if prep.sigma_mtf > 0 {
+					blurred := gauss_blur(src, w_sim, h_sim, prep.sigma_mtf)
 					defer delete(blurred)
-					if blurred != nil {
-						copy(src, blurred)
-					}
+					copy(src, blurred)
 				}
-			} else if sigma_mtf > 0 {
-				blurred, ok := adaptive_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
-				if !ok {
-					fail("Adaptive blur failed")
-					return nil, 0, 0, false
-				}
+			} else if prep.sigma_mtf > 0 {
+				blurred := adaptive_blur(src, w_sim, h_sim, prep.sigma_mtf, prep.mtf_max)
 				defer delete(blurred)
 				copy(src, blurred)
 			}
-			params := prep_physics(r_px, sig_px, sig_f)
 			if verbose {
 				info(
 					fmt.tprintf(
 						"[emu %d] dye=[%d, %d, %d]  R=%.3fpx  mtf=%.3fpx",
 						idx,
-						emu.dye[0],
-						emu.dye[1],
-						emu.dye[2],
-						params.r_px / ss,
-						sigma_mtf / ss,
+						prep.dye[0],
+						prep.dye[1],
+						prep.dye[2],
+						prep.r_px / f32(opts.supersample),
+						prep.sigma_mtf / f32(opts.supersample),
 					),
 				)
 			}
-			render_params := Render_Params {
-				width       = u32(w_sim),
-				height      = u32(h_sim),
-				n_samples   = u32(opts.samples),
-				seed        = frame_seed + u32(idx) * 19,
-				sigma_f     = params.sig_f_px,
-				sigma       = params.sig_px,
-				r2          = params.r2,
-				sigma_ln    = params.sigma_ln,
-				mu_ln       = params.mu_ln,
-				max_r       = params.max_r,
-				ag          = params.ag,
-				lambda_fac  = params.lambda_fac,
-				frame_off_x = math.sin(f32(frame_idx) * 0.7) * 0.12,
-				frame_off_y = math.cos(f32(frame_idx) * 0.9) * 0.12,
-			}
 			t^ = stage_time(fmt.tprintf("[emu %d] CPU preprocess", idx), t^, verbose)
-			if !dispatch_render(ctx, render_params, src, neg, src_on_device) {
+			if !cpu_dispatch_render(ctx, prep.params, src, neg) {
 				fail("Dispatch failed")
 				return nil, 0, 0, false
 			}
 			t^ = stage_time(fmt.tprintf("[emu %d] GPU render", idx), t^, verbose)
 			dens := make([]f32, n)
 			copy(dens, neg)
-			append(&layer_absorbs, absorb)
+			append(&layer_absorbs, prep.absorb)
 			append(&layer_dens, dens)
 			append(&layer_depths, current_z)
 			current_z += 1
-			parallel_for(n, &Front_Update_Data{neg = neg, ray_front = ray_front, absorb = absorb}, front_update_task)
+			parallel_for(n, &Front_Update_Data{neg = neg, ray_front = ray_front, absorb = prep.absorb}, front_update_task)
 		case .Filter:
 			col := cfg.filters[item.index].color
 			if verbose {
@@ -821,11 +845,7 @@ render_frame :: proc(
 		absorb := layer_absorbs[l]
 		dens := layer_dens[l]
 		parallel_for(n, &Front_Assemble_Data{front = front, dens = dens, absorb = absorb}, front_assemble_task)
-		dens_smooth, ok := gauss_blur_dispatch(ctx, dens, w_sim, h_sim, GRAIN_SMOOTH_SIGMA)
-		if !ok {
-			fail("Grain smoothing blur failed")
-			return nil, 0, 0, false
-		}
+		dens_smooth := gauss_blur(dens, w_sim, h_sim, GRAIN_SMOOTH_SIGMA)
 		defer delete(dens_smooth)
 		parallel_for(n, &Front_Assemble_Data{front = front_smooth, dens = dens_smooth, absorb = absorb}, front_assemble_task)
 	}
@@ -991,7 +1011,7 @@ collect_one :: proc(res: Render_Result, next_seq: ^int, pending: ^map[int][]u8, 
 	return true
 }
 
-run_video :: proc(opts: ^Options, cli: ^Cli_Options, device_choice: Device_Choice) {
+run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 	vinfo, ok := video_probe(cli.input)
 	if !ok {
 		fail(fmt.tprintf("Failed to probe video: %s", cli.input))
@@ -1019,6 +1039,11 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options, device_choice: Device_Choic
 		os.exit(1)
 	}
 	defer destroy_film_config(&cfg)
+	device_choice, dok := parse_device_choice(opts.device)
+	if !dok {
+		fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
+		os.exit(1)
+	}
 
 	h_sim := opts.height * opts.supersample
 	w_sim := max(1, int(f32(vinfo.width) * f32(h_sim) / f32(vinfo.height) + 0.5))
