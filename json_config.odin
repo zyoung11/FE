@@ -78,8 +78,7 @@ default_options :: proc() -> Options {
 		sat_lo         = -1,
 		sat_hi         = -1,
 		cross          = -1,
-		bitrate        = 60,
-		maxrate        = 100,
+		qp             = 0,
 		reciprocity    = 0.0,
 		negative       = false,
 		mode           = "color",
@@ -235,8 +234,7 @@ parse_config_file :: proc(path: string) -> (cfg: Film_Config, opts: Options, ok:
 	set_int_field(obj, "supersample", &opts.supersample)
 	set_int_field(obj, "samples", &opts.samples)
 	set_int_field(obj, "bounce_samples", &opts.bounce_samples)
-	set_int_field(obj, "bitrate", &opts.bitrate)
-	set_int_field(obj, "maxrate", &opts.maxrate)
+	set_int_field(obj, "qp", &opts.qp)
 	set_u32_field(obj, "seed", &opts.seed)
 	set_f32_field(obj, "gamma", &opts.gamma)
 	set_f32_field(obj, "mtf", &opts.mtf)

@@ -11,6 +11,9 @@ Auto_Result :: struct {
 	mtf_abs:      f32,
 }
 
+// Content sharpness upper bound for auto grain radius in photo mode (output px); keeps soft/low-res photos from getting overly coarse grain
+AUTO_GRAIN_R_MAX_PHOTO :: 0.009
+
 content_sharpness :: proc(pixels: [^]u8, w: int, h: int, target_h: int) -> f32 {
 	gray_src := make([]u8, w * h)
 	defer delete(gray_src)
@@ -183,6 +186,9 @@ build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: i
 	sf := auto_res.sigma_filter
 	gs := auto_res.grain_sigma
 	gr *= 2.2
+	if !for_video {
+		gr = min(gr, AUTO_GRAIN_R_MAX_PHOTO)
+	}
 	sf *= 4.0
 	gs *= 2.0
 	info(fmt.tprintf("Content sharpness: %.2f", sharpness))

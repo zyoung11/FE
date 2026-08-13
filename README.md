@@ -144,8 +144,7 @@ All render settings live in the JSON config file. A complete example is provided
 | `cross` | float | `-1` (auto) | Color cross coefficient |
 | `reciprocity` | float | `0` | Schwarzschild reciprocity failure strength (0 = off, 1 = max). Simulates long-exposure sensitivity loss: shadows gain fog and a warm cast (per-layer differences) |
 | `negative` | bool | `false` | Negative film mode: print toe/shoulder curve, warm orange mask residue in shadows, and a correction matrix for the color mask |
-| `bitrate` | int | `60` | Video average bitrate (Mbps) |
-| `maxrate` | int | `100` | Video peak bitrate (Mbps) |
+| `qp` | int | `28` | Video encoding quality: HEVC constant-QP level (lower = higher quality / larger files). Fixed QP keeps film grain uniform across frames (bitrate-targeted modes cause visible grain flicker) |
 
 ### Film structure
 
@@ -180,7 +179,7 @@ All render settings live in the JSON config file. A complete example is provided
 ## Output
 
 - **Photos**: PNG, JPEG (quality 90), BMP via stb
-- **Videos**: any container supported by the local ffmpeg build (`.mp4` recommended). Encoded with HEVC (NVENC, `preset p7`, VBR, spatial/temporal AQ), audio copied/encoded as AAC 192k
+- **Videos**: any container supported by the local ffmpeg build (`.mp4` recommended). Encoded with HEVC (NVENC, `preset p7`, constant QP), audio copied/encoded as AAC 192k
 
 ## Notes
 

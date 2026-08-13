@@ -338,8 +338,7 @@ Options :: struct {
 	sat_lo:         f32,
 	sat_hi:         f32,
 	cross:          f32,
-	bitrate:        int,
-	maxrate:        int,
+	qp:             int,
 	reciprocity:    f32,
 	negative:       bool,
 	mode:           string,
@@ -1020,8 +1019,7 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 	info(fmt.tprintf("Video: %dx%d @%.2f fps, %d frames", vinfo.width, vinfo.height, vinfo.fps, vinfo.n_frames))
 	opts.supersample = 1
 	if opts.height <= 0 {opts.height = 2160}
-	if opts.bitrate <= 0 {opts.bitrate = 60}
-	if opts.maxrate <= 0 {opts.maxrate = 100}
+	if opts.qp <= 0 {opts.qp = 28}
 
 	vin, ok2 := video_in_start(cli.input, vinfo)
 	if !ok2 {
@@ -1049,7 +1047,7 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 	w_sim := max(1, int(f32(vinfo.width) * f32(h_sim) / f32(vinfo.height) + 0.5))
 	info(fmt.tprintf("Output: %dx%d @%.2f fps", w_sim, h_sim, vinfo.fps))
 
-	vout, ok4 := video_out_start(cli.output, w_sim, h_sim, vinfo.fps, cli.input, opts.bitrate, opts.maxrate)
+	vout, ok4 := video_out_start(cli.output, w_sim, h_sim, vinfo.fps, cli.input, opts.qp)
 	if !ok4 {
 		fail("Failed to start video encoder (ffmpeg in PATH and NVENC-capable GPU required)")
 		os.exit(1)

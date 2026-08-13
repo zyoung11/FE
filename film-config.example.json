@@ -18,8 +18,7 @@
   "negative": false,
   "seed": 42,
   "device": "auto",
-  "bitrate": 80,
-  "maxrate": 120,
+  "qp": 28,
   "emulsions": [
     {
       "dye": [255, 255, 0],
