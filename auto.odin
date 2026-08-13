@@ -63,6 +63,37 @@ compute_auto_values :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_vi
 	}
 }
 
+// Print every auto-determined parameter for one analysis pass (photo render,
+// initial video analysis or a video scene-change re-analysis)
+log_auto_params :: proc(label: string, opts: ^Options, ap: Auto_Params) {
+	info(
+		fmt.tprintf(
+			"%s: mode=%s height=%d ss=%d samples=%d bounce=%d gamma=%.2f R=%.4f SIG=%.4f F=%.4f MTF=%.3f film=%.2f toe=%.2f shoulder=%.2f satL=%.2f satH=%.2f cross=%.3f EXP=%.3f CON=%.3f refl=%.3f thick=%.1f",
+			label,
+			opts.mode,
+			opts.height,
+			opts.supersample,
+			opts.samples,
+			opts.bounce_samples,
+			opts.gamma,
+			ap.grain_radius,
+			ap.grain_sigma,
+			ap.sigma_filter,
+			ap.mtf,
+			ap.film,
+			ap.print_toe,
+			ap.print_shoulder,
+			ap.sat_lo,
+			ap.sat_hi,
+			ap.cross,
+			ap.exposure,
+			ap.contrast,
+			opts.reflectance,
+			opts.thickness,
+		),
+	)
+}
+
 apply_auto_params :: proc(opts: ^Options, ap: Auto_Params) {
 	if !ap.valid {
 		return
@@ -303,19 +334,6 @@ build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: i
 	if opts.cross < 0 {opts.cross = 0.03}
 	opts.exposure = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35)
 	opts.contrast = clamp(1.15 - (hi - lo) * 0.3 + mtf_boost, 0.85, 1.25)
-	info(
-		fmt.tprintf(
-			"auto: grain R=%.3f SIG=%.3f F=%.3f MTF=%.3f print T=%.2f S=%.2f EXP=%.3f CON=%.2f",
-			opts.grain_radius,
-			opts.grain_sigma,
-			opts.sigma_filter,
-			auto_mtf,
-			opts.print_toe,
-			opts.print_shoulder,
-			opts.exposure,
-			opts.contrast,
-		),
-	)
 	cfg = build_auto_config(
 		opts.mode,
 		opts.thickness,

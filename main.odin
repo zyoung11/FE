@@ -698,6 +698,26 @@ resolve_config :: proc(
 		destroy_film_config(&cfg)
 		return {}, false
 	}
+	if !config_mode {
+		ap := Auto_Params {
+			grain_radius   = opts.grain_radius,
+			grain_sigma    = opts.grain_sigma,
+			sigma_filter   = opts.sigma_filter,
+			film           = opts.film,
+			print_toe      = opts.print_toe,
+			print_shoulder = opts.print_shoulder,
+			sat_lo         = opts.sat_lo,
+			sat_hi         = opts.sat_hi,
+			cross          = opts.cross,
+			exposure       = opts.exposure,
+			contrast       = opts.contrast,
+			valid          = true,
+		}
+		if len(cfg.emulsions) > 0 && cfg.emulsions[0].mtf_blur != nil {
+			ap.mtf = cfg.emulsions[0].mtf_blur.? / 0.6
+		}
+		log_auto_params("auto params", opts, ap)
+	}
 	return cfg, true
 }
 
@@ -1157,7 +1177,7 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 					ap_prog = 0.0
 					bl_avg, bl_lo, bl_hi = avg, lo, hi
 					persist = 0
-					info(fmt.tprintf("scene change at frame %d: R=%.3f MTF=%.3f EXP=%.3f", f, ap_tgt.grain_radius, ap_tgt.mtf, ap_tgt.exposure))
+					log_auto_params(fmt.tprintf("scene %d auto params", f), opts, ap_tgt)
 				}
 			} else {
 				persist = 0
