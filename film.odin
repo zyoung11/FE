@@ -305,9 +305,9 @@ gauss_blur :: proc(src: []f32, w: int, h: int, sigma: f32) -> []f32 {
     return out
 }
 
-gauss_blur_dispatch :: proc(ctx: ^Compute_Context, src: []f32, w: int, h: int, sigma: f32) -> ([]f32, bool) {
+gauss_blur_dispatch :: proc(ctx: ^Compute_Context, src: []f32, w: int, h: int, sigma: f32, keep_on_device := false) -> ([]f32, bool) {
     if ctx.mode == .Cuda {
-        return cuda_gauss_blur(&ctx.cuda, src, u32(w), u32(h), sigma)
+        return cuda_gauss_blur(&ctx.cuda, src, u32(w), u32(h), sigma, keep_on_device)
     }
     return gauss_blur(src, w, h, sigma), true
 }
@@ -317,4 +317,86 @@ adaptive_blur_dispatch :: proc(ctx: ^Compute_Context, src: []f32, w: int, h: int
         return cuda_adaptive_blur(&ctx.cuda, src, u32(w), u32(h), sigma_min, sigma_max)
     }
     return adaptive_blur(src, w, h, sigma_min, sigma_max), true
+}
+
+// Halation bounce resolution divisor (halation is low-frequency; full-res bounce is wasted work)
+HALATION_SCALE :: 4
+
+// Box-filter downsample of an interleaved multi-channel image
+box_downsample :: proc(src: []f32, sw: int, sh: int, channels: int, dw: int, dh: int) -> []f32 {
+    out := make([]f32, dw * dh * channels)
+    for y in 0 ..< dh {
+        sy0 := y * sh / dh
+        sy1 := max(sy0 + 1, (y + 1) * sh / dh)
+        for x in 0 ..< dw {
+            sx0 := x * sw / dw
+            sx1 := max(sx0 + 1, (x + 1) * sw / dw)
+            for c in 0 ..< channels {
+                acc: f32
+                count := 0
+                for sy in sy0 ..< sy1 {
+                    for sx in sx0 ..< sx1 {
+                        acc += src[(sy * sw + sx) * channels + c]
+                        count += 1
+                    }
+                }
+                out[(y * dw + x) * channels + c] = acc / f32(count)
+            }
+        }
+    }
+    return out
+}
+
+// Box-filter downsample of a plane-major layer stack (layout: layer * sw * sh)
+box_downsample_planes :: proc(src: []f32, sw: int, sh: int, planes: int, dw: int, dh: int) -> []f32 {
+    out := make([]f32, planes * dw * dh)
+    for l in 0 ..< planes {
+        src_l := src[l * sw * sh:(l + 1) * sw * sh]
+        dst_l := out[l * dw * dh:(l + 1) * dw * dh]
+        for y in 0 ..< dh {
+            sy0 := y * sh / dh
+            sy1 := max(sy0 + 1, (y + 1) * sh / dh)
+            for x in 0 ..< dw {
+                sx0 := x * sw / dw
+                sx1 := max(sx0 + 1, (x + 1) * sw / dw)
+                acc: f32
+                count := 0
+                for sy in sy0 ..< sy1 {
+                    for sx in sx0 ..< sx1 {
+                        acc += src_l[sy * sw + sx]
+                        count += 1
+                    }
+                }
+                dst_l[y * dw + x] = acc / f32(count)
+            }
+        }
+    }
+    return out
+}
+
+// Bilinear upsample of an interleaved multi-channel image
+bilinear_upsample :: proc(src: []f32, sw: int, sh: int, channels: int, dw: int, dh: int) -> []f32 {
+    out := make([]f32, dw * dh * channels)
+    sx := f32(sw) / f32(dw)
+    sy := f32(sh) / f32(dh)
+    for y in 0 ..< dh {
+        fy := (f32(y) + 0.5) * sy - 0.5
+        y0 := clamp(int(fy), 0, sh - 1)
+        y1 := min(y0 + 1, sh - 1)
+        ty := clamp(fy - f32(y0), 0.0, 1.0)
+        for x in 0 ..< dw {
+            fx := (f32(x) + 0.5) * sx - 0.5
+            x0 := clamp(int(fx), 0, sw - 1)
+            x1 := min(x0 + 1, sw - 1)
+            tx := clamp(fx - f32(x0), 0.0, 1.0)
+            for c in 0 ..< channels {
+                v00 := src[(y0 * sw + x0) * channels + c]
+                v10 := src[(y0 * sw + x1) * channels + c]
+                v01 := src[(y1 * sw + x0) * channels + c]
+                v11 := src[(y1 * sw + x1) * channels + c]
+                out[(y * dw + x) * channels + c] = (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty
+            }
+        }
+    }
+    return out
 }

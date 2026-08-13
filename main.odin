@@ -727,15 +727,18 @@ render_frame :: proc(
 			if mtf_max == nil {
 				mtf_max = mtf
 			}
+			src_on_device := ctx.mode == .Cuda && sigma_mtf > 0
 			if mtf_max == nil || mtf_max.? <= mtf.? {
 				if sigma_mtf > 0 {
-					blurred, ok := gauss_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf)
+					blurred, ok := gauss_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, src_on_device)
 					if !ok {
 						fail("Gaussian blur failed")
 						return nil, 0, 0, false
 					}
 					defer delete(blurred)
-					copy(src, blurred)
+					if blurred != nil {
+						copy(src, blurred)
+					}
 				}
 			} else if sigma_mtf > 0 {
 				blurred, ok := adaptive_blur_dispatch(ctx, src, w_sim, h_sim, sigma_mtf, mtf_max.? * ss)
@@ -777,7 +780,7 @@ render_frame :: proc(
 				frame_off_y = math.cos(f32(frame_idx) * 0.9) * 0.12,
 			}
 			t^ = stage_time(fmt.tprintf("[emu %d] CPU preprocess", idx), t^, verbose)
-			if !dispatch_render(ctx, render_params, src, neg) {
+			if !dispatch_render(ctx, render_params, src, neg, src_on_device) {
 				fail("Dispatch failed")
 				return nil, 0, 0, false
 			}
@@ -831,7 +834,6 @@ render_frame :: proc(
 
 	final := front
 	defer if back_refl > EPS {delete(final)}
-	halation_out: []f32
 	if back_refl > EPS {
 		front_hdr := make([]f32, n * 3)
 		defer delete(front_hdr)
@@ -841,7 +843,7 @@ render_frame :: proc(
 		defer delete(depth)
 		last := max(layer_depths[n_layers - 1], 1.0)
 		for l in 0 ..< n_layers {
-			depth[l] = layer_depths[l] / last * film_thick
+			depth[l] = layer_depths[l] / last * film_thick / HALATION_SCALE
 		}
 		dens_stack := make([]f32, n_layers * n)
 		defer delete(dens_stack)
@@ -855,26 +857,32 @@ render_frame :: proc(
 			absorb_stack[l * 3 + 1] = layer_absorbs[l][1]
 			absorb_stack[l * 3 + 2] = layer_absorbs[l][2]
 		}
-		bounced := make([]f32, n * 3)
-		defer delete(bounced)
+		bw := max(1, w_sim / HALATION_SCALE)
+		bh := max(1, h_sim / HALATION_SCALE)
+		front_low := box_downsample(front_hdr, w_sim, h_sim, 3, bw, bh)
+		defer delete(front_low)
+		dens_low := box_downsample_planes(dens_stack, w_sim, h_sim, n_layers, bw, bh)
+		defer delete(dens_low)
+		bounced_low := make([]f32, bw * bh * 3)
+		defer delete(bounced_low)
 		if verbose {
-			info(fmt.tprintf("Halation bounce %d samples/pixel ...", opts.bounce_samples))
+			info(fmt.tprintf("Halation bounce %d samples/pixel @%dx%d ...", opts.bounce_samples, bw, bh))
 		}
 		bounce_params := Bounce_Params {
-			width     = u32(w_sim),
-			height    = u32(h_sim),
+			width     = u32(bw),
+			height    = u32(bh),
 			n_layers  = u32(n_layers),
 			n_samples = u32(opts.bounce_samples),
 			seed      = 424242,
-			film_px   = film_thick,
+			film_px   = film_thick / HALATION_SCALE,
 		}
 		t^ = stage_time("Halation prep", t^, verbose)
 		if !dispatch_bounce(
 			ctx,
 			bounce_params,
-			front_hdr,
-			bounced,
-			dens_stack,
+			front_low,
+			bounced_low,
+			dens_low,
 			absorb_stack,
 			depth,
 		) {
@@ -883,6 +891,8 @@ render_frame :: proc(
 		}
 
 		t^ = stage_time("Halation GPU bounce", t^, verbose)
+		bounced := bilinear_upsample(bounced_low, bw, bh, 3, w_sim, h_sim)
+		defer delete(bounced)
 		final = make([]f32, n * 3)
 		parallel_for(n * 3, &Final_Data{front = front, bounced = bounced, final = final, back_refl = back_refl}, final_task)
 	}

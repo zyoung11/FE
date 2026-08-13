@@ -255,8 +255,11 @@ cuda_cleanup :: proc(c: ^Cuda_Context) {
 	c.ctx = nil
 }
 
-cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32, neg: []f32) -> bool {
-	if res := cu_memcpy_htod(c.d_src, raw_data(src), u64(len(src)) * size_of(f32)); res != 0 {
+cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32, neg: []f32, src_on_device: bool) -> bool {
+	src_ptr := c.d_src
+	if src_on_device {
+		src_ptr = c.d_blur_src
+	} else if res := cu_memcpy_htod(c.d_src, raw_data(src), u64(len(src)) * size_of(f32)); res != 0 {
 		fail(fmt.tprintf("cuMemcpyHtoD: %s", cuda_error_string(res)))
 		return false
 	}
@@ -264,7 +267,7 @@ cuda_dispatch_render :: proc(c: ^Cuda_Context, params: Render_Params, src: []f32
 	p.y_offset = 0
 	grid_x := (params.width + 15) / 16
 	grid_y := (params.height + 15) / 16
-	args := [3]rawptr{&c.d_src, &c.d_neg, &p}
+	args := [3]rawptr{&src_ptr, &c.d_neg, &p}
 	if res := cu_launch_kernel(
 		c.render_fn,
 		grid_x, grid_y, 1,
@@ -399,7 +402,7 @@ cuda_launch_gauss :: proc(c: ^Cuda_Context, src: CUdeviceptr, dst: CUdeviceptr, 
 	return true
 }
 
-cuda_gauss_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma: f32) -> ([]f32, bool) {
+cuda_gauss_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma: f32, keep_on_device := false) -> ([]f32, bool) {
 	if sigma <= 0 {
 		out := make([]f32, len(src))
 		copy(out, src)
@@ -419,6 +422,9 @@ cuda_gauss_blur :: proc(c: ^Cuda_Context, src: []f32, w: u32, h: u32, sigma: f32
 	if res := cu_ctx_synchronize(); res != 0 {
 		fail(fmt.tprintf("cuCtxSynchronize: %s", cuda_error_string(res)))
 		return nil, false
+	}
+	if keep_on_device {
+		return nil, true
 	}
 	out := make([]f32, len(src))
 	if res := cu_memcpy_dtoh(raw_data(out), c.d_blur_src, u64(len(out)) * size_of(f32)); res != 0 {

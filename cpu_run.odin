@@ -455,10 +455,10 @@ cpu_dispatch_bounce :: proc(
 	return true
 }
 
-dispatch_render :: proc(ctx: ^Compute_Context, params: Render_Params, src: []f32, neg: []f32) -> bool {
+dispatch_render :: proc(ctx: ^Compute_Context, params: Render_Params, src: []f32, neg: []f32, src_on_device: bool) -> bool {
 	switch ctx.mode {
 	case .Cuda:
-		return cuda_dispatch_render(&ctx.cuda, params, src, neg)
+		return cuda_dispatch_render(&ctx.cuda, params, src, neg, src_on_device)
 	case .Cpu:
 		return cpu_dispatch_render(ctx, params, src, neg)
 	}
