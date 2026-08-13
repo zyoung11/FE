@@ -12,6 +12,92 @@ Auto_Result :: struct {
 }
 
 
+Auto_Params :: struct {
+	grain_radius:   f32,
+	grain_sigma:    f32,
+	sigma_filter:   f32,
+	mtf:            f32,
+	film:           f32,
+	print_toe:      f32,
+	print_shoulder: f32,
+	sat_lo:         f32,
+	sat_hi:         f32,
+	cross:          f32,
+	exposure:       f32,
+	contrast:       f32,
+	valid:          bool,
+}
+
+// Per-frame auto analysis: content sharpness and luminance histogram drive the
+// grain, MTF and grading parameters (video scene-change adaptation)
+compute_auto_values :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> Auto_Params {
+	sharpness := content_sharpness(raw_data(pixels), w, h, opts.height)
+	w_out := max(1, int(f32(w) * f32(opts.height) / f32(h) + 0.5))
+	density := f32(w * h) / f32(w_out * opts.height)
+	t_mtf := clamp(-0.1194 * sharpness - 0.05 * density + 1.696, 0.0, 1.0)
+	auto_res := compute_auto(sharpness, t_mtf, opts.height)
+	gr := (0.09 - 0.05 * clamp(sharpness / 7.0, 0.0, 1.0)) / 10.0 * 2.2
+	sf := auto_res.sigma_filter * 4.0
+	gs := auto_res.grain_sigma * 2.0
+	mtf := auto_res.mtf_abs
+	if for_video {
+		mtf *= 2.0
+	}
+	t := clamp((sharpness - 3.0) / 4.5, 0.0, 1.0)
+	avg, lo, hi := image_stats(pixels, w, h)
+	mtf_boost := max(0.0, 0.686 - t_mtf) * 0.25
+	return Auto_Params {
+		grain_radius   = gr,
+		grain_sigma    = gs,
+		sigma_filter   = sf,
+		mtf            = mtf,
+		film           = 0.5 + 0.2 * t,
+		print_toe      = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5),
+		print_shoulder = clamp(0.15 + (hi - lo) * 0.3, 0.2, 0.5),
+		sat_lo         = max(0.05, 0.12 + 0.08 * (1.0 - avg) - mtf_boost * 0.5),
+		sat_hi         = max(0.05, 0.15 + 0.1 * t - mtf_boost * 0.5),
+		cross          = 0.03,
+		exposure       = clamp(0.08 - (avg - 0.45) * 0.2, -0.2, 0.35),
+		contrast       = clamp(1.15 - (hi - lo) * 0.3 + mtf_boost, 0.85, 1.25),
+		valid          = true,
+	}
+}
+
+apply_auto_params :: proc(opts: ^Options, ap: Auto_Params) {
+	if !ap.valid {
+		return
+	}
+	opts.grain_radius = ap.grain_radius
+	opts.grain_sigma = ap.grain_sigma
+	opts.sigma_filter = ap.sigma_filter
+	opts.mtf = ap.mtf
+	opts.film = ap.film
+	opts.print_toe = ap.print_toe
+	opts.print_shoulder = ap.print_shoulder
+	opts.sat_lo = ap.sat_lo
+	opts.sat_hi = ap.sat_hi
+	opts.cross = ap.cross
+	opts.exposure = ap.exposure
+	opts.contrast = ap.contrast
+}
+
+lerp_auto_params :: proc(a, b: Auto_Params, t: f32) -> Auto_Params {
+	c := b
+	c.grain_radius = a.grain_radius + (b.grain_radius - a.grain_radius) * t
+	c.grain_sigma = a.grain_sigma + (b.grain_sigma - a.grain_sigma) * t
+	c.sigma_filter = a.sigma_filter + (b.sigma_filter - a.sigma_filter) * t
+	c.mtf = a.mtf + (b.mtf - a.mtf) * t
+	c.film = a.film + (b.film - a.film) * t
+	c.print_toe = a.print_toe + (b.print_toe - a.print_toe) * t
+	c.print_shoulder = a.print_shoulder + (b.print_shoulder - a.print_shoulder) * t
+	c.sat_lo = a.sat_lo + (b.sat_lo - a.sat_lo) * t
+	c.sat_hi = a.sat_hi + (b.sat_hi - a.sat_hi) * t
+	c.cross = a.cross + (b.cross - a.cross) * t
+	c.exposure = a.exposure + (b.exposure - a.exposure) * t
+	c.contrast = a.contrast + (b.contrast - a.contrast) * t
+	return c
+}
+
 // Content sharpness: mean absolute gradient on a downscaled grayscale copy
 content_sharpness :: proc(pixels: [^]u8, w: int, h: int, target_h: int) -> f32 {
 	gray_src := make([]u8, w * h)

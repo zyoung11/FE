@@ -602,6 +602,10 @@ Emu_Prep :: struct {
 
 prep_emulsion :: proc(opts: ^Options, emu_in: Emulsion_Cfg, ss: f32, frame_seed: u32, idx: int, frame_idx: int, w_sim: int, h_sim: int) -> Emu_Prep {
 	emu := emu_in
+	if opts.mtf >= 0 {
+		emu.mtf_blur = opts.mtf * 0.6
+		emu.mtf_blur_max = opts.mtf * 1.4
+	}
 	if opts.grain_radius >= 0 {
 		emu.grain_radius = opts.grain_radius
 	}
@@ -937,8 +941,9 @@ render_frame :: proc(
 }
 
 Render_Task :: struct {
-	frame: int,
-	data:  []u8,
+	frame:  int,
+	data:   []u8,
+	auto_p: Auto_Params,
 }
 
 Render_Result :: struct {
@@ -976,7 +981,9 @@ render_worker_main :: proc(t: ^thread.Thread) {
 			break
 		}
 		tt := time.now()
-			out8, _, _, rok := render_frame(&w.ctx, w.opts, w.cfg, task.data, w.fw, w.fh, w.seed_base, task.frame, &tt, false)
+		opts_copy := w.opts^
+		apply_auto_params(&opts_copy, task.auto_p)
+		out8, _, _, rok := render_frame(&w.ctx, &opts_copy, w.cfg, task.data, w.fw, w.fh, w.seed_base, task.frame, &tt, false)
 		delete(task.data)
 		if !rok {
 			fail("Frame render failed")
@@ -1038,6 +1045,33 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 		os.exit(1)
 	}
 	defer destroy_film_config(&cfg)
+	auto_adapt := cli.config == ""
+	ap_cur, ap_tgt: Auto_Params
+	ap_prog: f32 = 1.0
+	bl_avg, bl_lo, bl_hi: f32
+	persist := 0
+	if auto_adapt {
+		ap_cur = Auto_Params {
+			grain_radius   = opts.grain_radius,
+			grain_sigma    = opts.grain_sigma,
+			sigma_filter   = opts.sigma_filter,
+			film           = opts.film,
+			print_toe      = opts.print_toe,
+			print_shoulder = opts.print_shoulder,
+			sat_lo         = opts.sat_lo,
+			sat_hi         = opts.sat_hi,
+			cross          = opts.cross,
+			exposure       = opts.exposure,
+			contrast       = opts.contrast,
+			valid          = true,
+		}
+		if len(cfg.emulsions) > 0 && cfg.emulsions[0].mtf_blur != nil {
+			ap_cur.mtf = cfg.emulsions[0].mtf_blur.? / 0.6
+		}
+		ap_tgt = ap_cur
+		bl_avg, bl_lo, bl_hi = image_stats(frame_buf, vinfo.width, vinfo.height)
+	}
+	trans_frames := max(3, int(vinfo.fps * 0.5))
 	device_choice, dok := parse_device_choice(opts.device)
 	if !dok {
 		fail("--device format: auto | cpu | cuda | cuda:N (config \"device\" field)")
@@ -1112,7 +1146,29 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 				break
 			}
 		}
-		task := Render_Task{frame = f, data = make([]u8, len(frame_buf))}
+		ap_frame := ap_tgt
+		if auto_adapt {
+			avg, lo, hi := image_stats(frame_buf, vinfo.width, vinfo.height)
+			if abs(avg - bl_avg) > 0.10 || abs(lo - bl_lo) > 0.12 || abs(hi - bl_hi) > 0.12 {
+				persist += 1
+				if persist >= 3 {
+					ap_cur = lerp_auto_params(ap_cur, ap_tgt, ap_prog)
+					ap_tgt = compute_auto_values(opts, frame_buf, vinfo.width, vinfo.height, true)
+					ap_prog = 0.0
+					bl_avg, bl_lo, bl_hi = avg, lo, hi
+					persist = 0
+					info(fmt.tprintf("scene change at frame %d: R=%.3f MTF=%.3f EXP=%.3f", f, ap_tgt.grain_radius, ap_tgt.mtf, ap_tgt.exposure))
+				}
+			} else {
+				persist = 0
+			}
+			if ap_prog < 1.0 {
+				ap_prog = min(1.0, ap_prog + 1.0 / f32(trans_frames))
+				t := ap_prog * ap_prog * (3.0 - 2.0 * ap_prog)
+				ap_frame = lerp_auto_params(ap_cur, ap_tgt, t)
+			}
+		}
+		task := Render_Task{frame = f, data = make([]u8, len(frame_buf)), auto_p = ap_frame}
 		copy(task.data, frame_buf)
 		if !chan.send(workers[f % n_workers].tasks, task) {
 			fail("Render queue closed")
