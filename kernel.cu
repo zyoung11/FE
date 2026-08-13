@@ -70,33 +70,6 @@ __device__ void hemi_cosine(unsigned* s, float* dx, float* dy, float* dz) {
 	*dz = z;
 }
 
-#define GRAIN_CELL_MAX 64
-
-__device__ inline bool grain_hit_in_cell(unsigned* cs, int cx, int cy, float xG, float yG, float lam, float exp_lam, float r_scale, RenderParams p) {
-	unsigned n_grains = rnd_poisson(cs, lam, exp_lam);
-	for (unsigned z = 0u; z < n_grains; z++) {
-		float ru = rnd01(cs);
-		float rv = rnd01(cs);
-		float xc = p.ag * ((float)cx + ru);
-		float yc = p.ag * ((float)cy + rv);
-		float gr2 = p.r2 * r_scale * r_scale;
-		if (p.sigma > 0.0f) {
-			float rgx, rgy;
-			rnd_gauss(cs, &rgx, &rgy);
-			float rad = expf(p.mu_ln + p.sigma_ln * rgx);
-			if (rad > p.max_r) { rad = p.max_r; }
-			rad *= r_scale;
-			gr2 = rad * rad;
-		}
-		float dx = xc - xG;
-		float dy = yc - yG;
-		if (dx * dx + dy * dy < gr2) {
-			return true;
-		}
-	}
-	return false;
-}
-
 __global__ void render_kernel(const float* __restrict__ src, float* __restrict__ dst, RenderParams p) {
 	int px = blockIdx.x * blockDim.x + threadIdx.x;
 	int py = blockIdx.y * blockDim.y + threadIdx.y + (int)p.y_offset;
@@ -110,102 +83,67 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 	int W = (int)p.width;
 	int H = (int)p.height;
 
-	if (p.sigma_f > 0.05f) {
-		for (unsigned s = 0u; s < p.n_samples; s++) {
+	for (unsigned s = 0u; s < p.n_samples; s++) {
+		float xS = (float)px;
+		float yS = (float)py;
+		if (p.sigma_f > 1e-4f) {
 			float g1x, g1y, g2x, g2y;
 			rnd_gauss(&st, &g1x, &g1y);
 			rnd_gauss(&st, &g2x, &g2y);
-			float xS = (float)px + p.sigma_f * g1x;
-			float yS = (float)py + p.sigma_f * g2x;
-			float xG = xS + p.frame_off_x;
-			float yG = yS + p.frame_off_y;
-			int ix = (int)floorf(xS);
-			if (ix < 0) { ix = 0; }
-			if (ix > W - 1) { ix = W - 1; }
-			int iy = (int)floorf(yS);
-			if (iy < 0) { iy = 0; }
-			if (iy > H - 1) { iy = H - 1; }
-			float u = __ldg(&src[iy * W + ix]);
-			if (u < 0.0f) { u = 0.0f; }
-			if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
-			float lam = -p.lambda_fac * logf(1.0f - u);
-			float decay = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
-			lam *= decay;
-			float r_scale = 1.0f / sqrtf(decay);
-			float max_r_eff = p.max_r * r_scale;
-			float exp_lam = expf(-lam);
-			int min_x = (int)floorf((xG - max_r_eff) / p.ag);
-			int max_x = (int)floorf((xG + max_r_eff) / p.ag);
-			int min_y = (int)floorf((yG - max_r_eff) / p.ag);
-			int max_y = (int)floorf((yG + max_r_eff) / p.ag);
-			bool covered = false;
-			for (int cx = min_x; cx <= max_x && !covered; cx++) {
-				for (int cy = min_y; cy <= max_y && !covered; cy++) {
-					unsigned cs = wang(((((unsigned)cy & 0xFFFFu) << 16) | ((unsigned)cx & 0xFFFFu)) + fseed);
-					if (grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p)) {
-						covered = true;
-					}
-				}
-			}
-			if (covered) {
-				hit += 1.0f;
-			}
+			xS += p.sigma_f * g1x;
+			yS += p.sigma_f * g2x;
 		}
-		dst[py * W + px] = 1.0f - hit / (float)p.n_samples;
-		return;
-	}
+		float xG = xS + p.frame_off_x;
+		float yG = yS + p.frame_off_y;
 
-	float u = __ldg(&src[py * W + px]);
-	if (u < 0.0f) { u = 0.0f; }
-	if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
-	float lam = -p.lambda_fac * logf(1.0f - u);
-	float decay = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
-	lam *= decay;
-	if (lam < 1e-5f) {
-		dst[py * W + px] = 1.0f;
-		return;
-	}
-	float r_scale = 1.0f / sqrtf(decay);
-	float max_r_eff = p.max_r * r_scale;
-	float exp_lam = expf(-lam);
-	float xG = (float)px + p.frame_off_x;
-	float yG = (float)py + p.frame_off_y;
-	int min_x = (int)floorf((xG - max_r_eff) / p.ag);
-	int max_x = (int)floorf((xG + max_r_eff) / p.ag);
-	int min_y = (int)floorf((yG - max_r_eff) / p.ag);
-	int max_y = (int)floorf((yG + max_r_eff) / p.ag);
-	int cw = max_x - min_x + 1;
-	int nc = cw * (max_y - min_y + 1);
-	unsigned base[GRAIN_CELL_MAX];
-	bool fast = nc <= GRAIN_CELL_MAX;
-	if (fast) {
-		int k = 0;
-		for (int cx = min_x; cx <= max_x; cx++) {
-			for (int cy = min_y; cy <= max_y; cy++) {
-				base[k++] = wang(((((unsigned)cy & 0xFFFFu) << 16) | ((unsigned)cx & 0xFFFFu)) + fseed);
-			}
+		int ix = (int)floorf(xS);
+		if (ix < 0) { ix = 0; }
+		if (ix > W - 1) { ix = W - 1; }
+		int iy = (int)floorf(yS);
+		if (iy < 0) { iy = 0; }
+		if (iy > H - 1) { iy = H - 1; }
+		float u = __ldg(&src[iy * W + ix]);
+		if (u < 0.0f) { u = 0.0f; }
+		if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
+		float lam = -p.lambda_fac * logf(1.0f - u);
+		float decay = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
+		lam *= decay;
+		if (lam < 1e-5f) {
+			continue;
 		}
-	}
-	for (unsigned s = 0u; s < p.n_samples; s++) {
+		float r_scale = 1.0f / sqrtf(decay);
+		float max_r_eff = p.max_r * r_scale;
+		float exp_lam = expf(-lam);
+
+		int min_x = (int)floorf((xG - max_r_eff) / p.ag);
+		int max_x = (int)floorf((xG + max_r_eff) / p.ag);
+		int min_y = (int)floorf((yG - max_r_eff) / p.ag);
+		int max_y = (int)floorf((yG + max_r_eff) / p.ag);
+
 		bool covered = false;
-		if (fast) {
-			int cx = min_x;
-			int cy = min_y;
-			for (int k = 0; k < nc && !covered; k++) {
-				unsigned cs = base[k];
-				if (grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p)) {
-					covered = true;
-					break;
-				}
-				cy++;
-				if (cy > max_y) { cy = min_y; cx++; }
-			}
-		} else {
-			for (int cx = min_x; cx <= max_x && !covered; cx++) {
-				for (int cy = min_y; cy <= max_y && !covered; cy++) {
-					unsigned cs = wang(((((unsigned)cy & 0xFFFFu) << 16) | ((unsigned)cx & 0xFFFFu)) + fseed);
-					if (grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p)) {
+		for (int cx = min_x; cx <= max_x && !covered; cx++) {
+			for (int cy = min_y; cy <= max_y && !covered; cy++) {
+				unsigned cs = wang(((((unsigned)cy & 0xFFFFu) << 16) | ((unsigned)cx & 0xFFFFu)) + fseed);
+				unsigned n_grains = rnd_poisson(&cs, lam, exp_lam);
+				for (unsigned z = 0u; z < n_grains; z++) {
+					float ru = rnd01(&cs);
+					float rv = rnd01(&cs);
+					float xc = p.ag * ((float)cx + ru);
+					float yc = p.ag * ((float)cy + rv);
+					float gr2 = p.r2 * r_scale * r_scale;
+					if (p.sigma > 0.0f) {
+						float rgx, rgy;
+						rnd_gauss(&cs, &rgx, &rgy);
+						float rad = expf(p.mu_ln + p.sigma_ln * rgx);
+						if (rad > p.max_r) { rad = p.max_r; }
+						rad *= r_scale;
+						gr2 = rad * rad;
+					}
+					float dx = xc - xG;
+					float dy = yc - yG;
+					if (dx * dx + dy * dy < gr2) {
 						covered = true;
+						break;
 					}
 				}
 			}
