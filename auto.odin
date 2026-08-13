@@ -184,15 +184,15 @@ build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: i
 	gr := auto_res.grain_radius
 	sf := auto_res.sigma_filter
 	gs := auto_res.grain_sigma
+	tp := clamp(sharpness / 7.0, 0.0, 1.0)
+	gr = (0.09 - 0.05 * tp) / 10.0 * 2.2
 	if !for_video {
-		tp := clamp(sharpness / 7.0, 0.0, 1.0)
-		gr = (0.09 - 0.05 * tp) / 10.0 * 2.2
 		bpp := f32(file_size) / f32(max(1, w * h))
 		f_comp := clamp(0.5 + 1.5 * bpp, 0.55, 1.0)
 		gr *= f_comp
 		info(fmt.tprintf("grain auto: sharp=%.2f bpp=%.3f -> comp=%.2f", sharpness, bpp, f_comp))
 	} else {
-		gr *= 2.2
+		info(fmt.tprintf("grain auto: sharp=%.2f", sharpness))
 	}
 	sf *= 4.0
 	gs *= 2.0
