@@ -11,9 +11,8 @@ Auto_Result :: struct {
 	mtf_abs:      f32,
 }
 
-// Content sharpness upper bound for auto grain radius in photo mode (output px); keeps soft/low-res photos from getting overly coarse grain
-AUTO_GRAIN_R_MAX_PHOTO :: 0.009
 
+// Content sharpness: mean absolute gradient on a downscaled grayscale copy
 content_sharpness :: proc(pixels: [^]u8, w: int, h: int, target_h: int) -> f32 {
 	gray_src := make([]u8, w * h)
 	defer delete(gray_src)
@@ -171,7 +170,7 @@ build_auto_config :: proc(
 	return cfg
 }
 
-build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool) -> (cfg: Film_Config, ok: bool) {
+build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_video: bool, file_size: int) -> (cfg: Film_Config, ok: bool) {
 	if opts.supersample == 0 {opts.supersample = 2}
 	if opts.gamma == 0 {opts.gamma = 2.4}
 	if opts.reflectance < 0 {opts.reflectance = 0.05}
@@ -185,9 +184,15 @@ build_auto_config_from_pixels :: proc(opts: ^Options, pixels: []u8, w: int, h: i
 	gr := auto_res.grain_radius
 	sf := auto_res.sigma_filter
 	gs := auto_res.grain_sigma
-	gr *= 2.2
 	if !for_video {
-		gr = min(gr, AUTO_GRAIN_R_MAX_PHOTO)
+		tp := clamp(sharpness / 7.0, 0.0, 1.0)
+		gr = (0.09 - 0.05 * tp) / 10.0 * 2.2
+		bpp := f32(file_size) / f32(max(1, w * h))
+		f_comp := clamp(0.5 + 1.5 * bpp, 0.55, 1.0)
+		gr *= f_comp
+		info(fmt.tprintf("grain auto: sharp=%.2f bpp=%.3f -> comp=%.2f", sharpness, bpp, f_comp))
+	} else {
+		gr *= 2.2
 	}
 	sf *= 4.0
 	gs *= 2.0

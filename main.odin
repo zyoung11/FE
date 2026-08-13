@@ -535,7 +535,7 @@ main :: proc() {
 	info(fmt.tprintf("Input: %s (%dx%d)", cli.input, w, h))
 	t = stage_time("Image load", t)
 
-	cfg, cfg_ok := resolve_config(&opts, cli.config != "", pixels[:int(w) * int(h) * 3], int(w), int(h), false, cli.config)
+	cfg, cfg_ok := resolve_config(&opts, cli.config != "", pixels[:int(w) * int(h) * 3], int(w), int(h), false, cli.config, len(input_bytes))
 	if !cfg_ok {
 		os.exit(1)
 	}
@@ -663,6 +663,7 @@ resolve_config :: proc(
 	h: int,
 	for_video: bool,
 	config_path: string,
+	file_size: int,
 ) -> (cfg: Film_Config, ok: bool) {
 	if config_mode {
 		parsed, parsed_opts, pok := parse_config_file(config_path)
@@ -673,7 +674,7 @@ resolve_config :: proc(
 		opts^ = parsed_opts
 		cfg = parsed
 	} else {
-		auto_cfg, aok := build_auto_config_from_pixels(opts, pixels, w, h, for_video)
+		auto_cfg, aok := build_auto_config_from_pixels(opts, pixels, w, h, for_video, file_size)
 		if !aok {
 			return {}, false
 		}
@@ -1032,7 +1033,7 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 		fail("Failed to decode first frame")
 		os.exit(1)
 	}
-	cfg, cfg_ok := resolve_config(opts, cli.config != "", frame_buf, vinfo.width, vinfo.height, true, cli.config)
+	cfg, cfg_ok := resolve_config(opts, cli.config != "", frame_buf, vinfo.width, vinfo.height, true, cli.config, 0)
 	if !cfg_ok {
 		os.exit(1)
 	}
