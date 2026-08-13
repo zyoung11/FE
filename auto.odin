@@ -63,7 +63,6 @@ content_sharpness :: proc(pixels: [^]u8, w: int, h: int, target_h: int) -> f32 {
 compute_auto :: proc(sharpness: f32, t_mtf: f32, height: int) -> Auto_Result {
 	t := clamp((sharpness - 3.0) / 4.5, 0.0, 1.0)
 	g := (0.09 - 0.05 * t) / 10.0
-	// MTF = 2.89 - 2.39*t: keeps the reference point (t=0.686 -> 1.25) while widening the range
 	m_mtf := min(2.89 - 2.39 * t_mtf, max(0.5, 0.003 * f32(height)))
 	return Auto_Result{grain_radius = g, grain_sigma = 0.001, sigma_filter = 0.004, mtf_abs = m_mtf}
 }

@@ -216,10 +216,10 @@ render_band :: proc(task: thread.Task) {
 							rv := rnd01(&cs)
 							xc := p.ag * (f32(cx) + ru)
 							yc := p.ag * (f32(cy) + rv)
-							gr2 := p.r2
+							gr2 := p.r2 * r_scale * r_scale
 							if p.sigma > 0 {
 								rg := rnd_gauss(&cs)
-								rad := min(math.exp(p.mu_ln + p.sigma_ln * rg[0]), p.max_r)
+								rad := min(math.exp(p.mu_ln + p.sigma_ln * rg[0]), p.max_r) * r_scale
 								gr2 = rad * rad
 							}
 							dx := xc - xG

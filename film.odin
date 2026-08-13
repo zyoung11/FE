@@ -174,7 +174,7 @@ print_curve :: proc(x: f32, toe: f32, shoulder: f32) -> f32 {
     }
     if x >= 1.0 - s {
         u := (1.0 - x) / s
-        return 1.0 - s * u * u / (2.0 * s)
+        return 1.0 - u * u / 2.0
     }
     k := (1.0 - s / 2.0 - t / 2.0) / (1.0 - s - t)
     return t / 2.0 + k * (x - t)

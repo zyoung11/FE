@@ -336,22 +336,6 @@ video_encode_thread :: proc(t: ^thread.Thread) {
 	}
 }
 
-frames_similar :: proc(a: []u8, b: []u8, w: int, h: int) -> bool {
-	sum: f32
-	count := 0
-	for y := 0; y < h; y += 16 {
-		for x := 0; x < w; x += 16 {
-			i := (y * w + x) * 3
-			sum +=
-				abs(f32(a[i]) - f32(b[i])) +
-				abs(f32(a[i + 1]) - f32(b[i + 1])) +
-				abs(f32(a[i + 2]) - f32(b[i + 2]))
-			count += 3
-		}
-	}
-	return sum / f32(count) < 2.5
-}
-
 video_write_frame :: proc(p: ^Ffmpeg_Proc, buf: []u8) -> bool {
 	done: u32
 	for done < u32(len(buf)) {
