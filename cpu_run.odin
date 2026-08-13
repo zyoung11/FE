@@ -177,6 +177,30 @@ hemi_cosine :: proc(s: ^u32) -> [3]f32 {
 	return {r * math.cos(phi), r * math.sin(phi), z}
 }
 
+GRAIN_CELL_MAX :: 64
+
+grain_hit_in_cell :: proc(cs: ^u32, cx: int, cy: int, xG: f32, yG: f32, lam: f32, exp_lam: f32, r_scale: f32, p: Render_Params) -> bool {
+	n_grains := rnd_poisson(cs, lam, exp_lam)
+	for _ in 0 ..< int(n_grains) {
+		ru := rnd01(cs)
+		rv := rnd01(cs)
+		xc := p.ag * (f32(cx) + ru)
+		yc := p.ag * (f32(cy) + rv)
+		gr2 := p.r2 * r_scale * r_scale
+		if p.sigma > 0 {
+			rg := rnd_gauss(cs)
+			rad := min(math.exp(p.mu_ln + p.sigma_ln * rg[0]), p.max_r) * r_scale
+			gr2 = rad * rad
+		}
+		dx := xc - xG
+		dy := yc - yG
+		if dx * dx + dy * dy < gr2 {
+			return true
+		}
+	}
+	return false
+}
+
 render_band :: proc(task: thread.Task) {
 	band := cast(^Render_Band)task.data
 	p := band.params
@@ -186,51 +210,99 @@ render_band :: proc(task: thread.Task) {
 		for px in 0 ..< w {
 			st := wang(u32(py) * 73856093 ~ u32(px) * 19349663 ~ fseed)
 			hit: f32 = 0
-			for _ in 0 ..< int(p.n_samples) {
-				xS := f32(px)
-				yS := f32(py)
-				if p.sigma_f > 1e-4 {
+			if p.sigma_f > 0.05 {
+				for _ in 0 ..< int(p.n_samples) {
 					g1 := rnd_gauss(&st)
 					g2 := rnd_gauss(&st)
-					xS += p.sigma_f * g1[0]
-					yS += p.sigma_f * g2[0]
-				}
-				xG := xS + p.frame_off_x
-				yG := yS + p.frame_off_y
-				ix := clamp(int(math.floor(xS)), 0, w - 1)
-				iy := clamp(int(math.floor(yS)), 0, int(p.height) - 1)
-				u := clamp(band.src[iy * w + ix], 0.0, 1.0 - EPS)
-				lam := -p.lambda_fac * math.ln(1.0 - u)
-				decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
-				lam *= decay
-				r_scale := 1.0 / math.sqrt(decay)
-				max_r_eff := p.max_r * r_scale
-				exp_lam := math.exp(-lam)
-				min_x := int(math.floor((xG - max_r_eff) / p.ag))
-				max_x := int(math.floor((xG + max_r_eff) / p.ag))
-				min_y := int(math.floor((yG - max_r_eff) / p.ag))
-				max_y := int(math.floor((yG + max_r_eff) / p.ag))
-				covered := false
-				for cx := min_x; cx <= max_x && !covered; cx += 1 {
-					for cy := min_y; cy <= max_y && !covered; cy += 1 {
-						cs := wang((((u32(cy) & 0xFFFF) << 16) | (u32(cx) & 0xFFFF)) + fseed)
-						n_grains := rnd_poisson(&cs, lam, exp_lam)
-						for _ in 0 ..< int(n_grains) {
-							ru := rnd01(&cs)
-							rv := rnd01(&cs)
-							xc := p.ag * (f32(cx) + ru)
-							yc := p.ag * (f32(cy) + rv)
-							gr2 := p.r2 * r_scale * r_scale
-							if p.sigma > 0 {
-								rg := rnd_gauss(&cs)
-								rad := min(math.exp(p.mu_ln + p.sigma_ln * rg[0]), p.max_r) * r_scale
-								gr2 = rad * rad
-							}
-							dx := xc - xG
-							dy := yc - yG
-							if dx * dx + dy * dy < gr2 {
+					xS := f32(px) + p.sigma_f * g1[0]
+					yS := f32(py) + p.sigma_f * g2[0]
+					xG := xS + p.frame_off_x
+					yG := yS + p.frame_off_y
+					ix := clamp(int(math.floor(xS)), 0, w - 1)
+					iy := clamp(int(math.floor(yS)), 0, int(p.height) - 1)
+					u := clamp(band.src[iy * w + ix], 0.0, 1.0 - EPS)
+					lam := -p.lambda_fac * math.ln(1.0 - u)
+					decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
+					lam *= decay
+					r_scale := 1.0 / math.sqrt(decay)
+					max_r_eff := p.max_r * r_scale
+					exp_lam := math.exp(-lam)
+					min_x := int(math.floor((xG - max_r_eff) / p.ag))
+					max_x := int(math.floor((xG + max_r_eff) / p.ag))
+					min_y := int(math.floor((yG - max_r_eff) / p.ag))
+					max_y := int(math.floor((yG + max_r_eff) / p.ag))
+					covered := false
+					for cx := min_x; cx <= max_x && !covered; cx += 1 {
+						for cy := min_y; cy <= max_y && !covered; cy += 1 {
+							cs := wang((((u32(cy) & 0xFFFF) << 16) | (u32(cx) & 0xFFFF)) + fseed)
+							if grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p) {
 								covered = true
-								break
+							}
+						}
+					}
+					if covered {
+						hit += 1
+					}
+				}
+				band.neg[py * w + px] = 1.0 - hit / f32(p.n_samples)
+				continue
+			}
+			u := clamp(band.src[py * w + px], 0.0, 1.0 - EPS)
+			lam := -p.lambda_fac * math.ln(1.0 - u)
+			decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
+			lam *= decay
+			if lam < 1e-5 {
+				band.neg[py * w + px] = 1.0
+				continue
+			}
+			r_scale := 1.0 / math.sqrt(decay)
+			max_r_eff := p.max_r * r_scale
+			exp_lam := math.exp(-lam)
+			xG := f32(px) + p.frame_off_x
+			yG := f32(py) + p.frame_off_y
+			min_x := int(math.floor((xG - max_r_eff) / p.ag))
+			max_x := int(math.floor((xG + max_r_eff) / p.ag))
+			min_y := int(math.floor((yG - max_r_eff) / p.ag))
+			max_y := int(math.floor((yG + max_r_eff) / p.ag))
+			cw := max_x - min_x + 1
+			nc := cw * (max_y - min_y + 1)
+			base: [GRAIN_CELL_MAX]u32
+			fast := nc <= GRAIN_CELL_MAX
+			if fast {
+				k := 0
+				for cx := min_x; cx <= max_x; cx += 1 {
+					for cy := min_y; cy <= max_y; cy += 1 {
+						base[k] = wang((((u32(cy) & 0xFFFF) << 16) | (u32(cx) & 0xFFFF)) + fseed)
+						k += 1
+					}
+				}
+			}
+			for _ in 0 ..< int(p.n_samples) {
+				covered := false
+				if fast {
+					cx := min_x
+					cy := min_y
+					for k in 0 ..< nc {
+						if covered {
+							break
+						}
+						cs := base[k]
+						if grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p) {
+							covered = true
+							break
+						}
+						cy += 1
+						if cy > max_y {
+							cy = min_y
+							cx += 1
+						}
+					}
+				} else {
+					for cx := min_x; cx <= max_x && !covered; cx += 1 {
+						for cy := min_y; cy <= max_y && !covered; cy += 1 {
+							cs := wang((((u32(cy) & 0xFFFF) << 16) | (u32(cx) & 0xFFFF)) + fseed)
+							if grain_hit_in_cell(&cs, cx, cy, xG, yG, lam, exp_lam, r_scale, p) {
+								covered = true
 							}
 						}
 					}
