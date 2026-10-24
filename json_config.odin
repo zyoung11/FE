@@ -59,7 +59,6 @@ default_options :: proc() -> Options {
 	return Options {
 		height         = 0,
 		supersample    = 0,
-		samples        = 0,
 		bounce_samples = 0,
 		gamma          = 0,
 		mtf            = -1.0,
@@ -232,7 +231,6 @@ parse_config_file :: proc(path: string) -> (cfg: Film_Config, opts: Options, ok:
 	}
 	set_int_field(obj, "height", &opts.height)
 	set_int_field(obj, "supersample", &opts.supersample)
-	set_int_field(obj, "samples", &opts.samples)
 	set_int_field(obj, "bounce_samples", &opts.bounce_samples)
 	set_int_field(obj, "qp", &opts.qp)
 	set_u32_field(obj, "seed", &opts.seed)

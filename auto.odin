@@ -68,12 +68,11 @@ compute_auto_values :: proc(opts: ^Options, pixels: []u8, w: int, h: int, for_vi
 log_auto_params :: proc(label: string, opts: ^Options, ap: Auto_Params) {
 	info(
 		fmt.tprintf(
-			"%s: mode=%s height=%d ss=%d samples=%d bounce=%d gamma=%.2f R=%.4f SIG=%.4f F=%.4f MTF=%.3f film=%.2f toe=%.2f shoulder=%.2f satL=%.2f satH=%.2f cross=%.3f EXP=%.3f CON=%.3f refl=%.3f thick=%.1f",
+			"%s: mode=%s height=%d ss=%d bounce=%d gamma=%.2f R=%.4f SIG=%.4f F=%.4f MTF=%.3f film=%.2f toe=%.2f shoulder=%.2f satL=%.2f satH=%.2f cross=%.3f EXP=%.3f CON=%.3f refl=%.3f thick=%.1f",
 			label,
 			opts.mode,
 			opts.height,
 			opts.supersample,
-			opts.samples,
 			opts.bounce_samples,
 			opts.gamma,
 			ap.grain_radius,

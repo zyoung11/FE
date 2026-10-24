@@ -319,7 +319,6 @@ stage_time :: proc(label: string, t0: time.Time, verbose := true) -> time.Time {
 Options :: struct {
 	height:         int,
 	supersample:    int,
-	samples:        int,
 	bounce_samples: int,
 	gamma:          f32,
 	mtf:            f32,
@@ -643,7 +642,7 @@ prep_emulsion :: proc(opts: ^Options, emu_in: Emulsion_Cfg, ss: f32, frame_seed:
 		params    = Render_Params {
 			width       = u32(w_sim),
 			height      = u32(h_sim),
-			n_samples   = u32(opts.samples),
+			n_samples   = u32(GRAIN_PROBES),
 			seed        = frame_seed + u32(idx) * 19,
 			sigma_f     = params.sig_f_px,
 			sigma       = params.sig_px,
@@ -685,11 +684,9 @@ resolve_config :: proc(
 		cfg = auto_cfg
 	}
 	if for_video {
-		if opts.samples == 0 {opts.samples = 128}
 		if opts.bounce_samples == 0 {opts.bounce_samples = 128}
 		if opts.film == 0 {opts.film = 0.5}
 	} else {
-		if opts.samples == 0 {opts.samples = 400}
 		if opts.bounce_samples == 0 {opts.bounce_samples = 400}
 	}
 	if opts.supersample == 0 {opts.supersample = 1}

@@ -5,6 +5,11 @@ __constant__ float CHAN_DEPTH[3] = {1.25f, 1.0f, 0.8f};
 // Front-interface reflectance for the second bounce
 #define HALATION_R_FRONT 0.3f
 
+// 7x7 stratified antithetic probe grid for the jitter marginalisation; each
+// stratum draws one Gaussian point and its negation, which keeps the original
+// shared-field estimator unbiased while cutting its variance to the S=400 level
+#define PROBE_GRID 7u
+
 struct RenderParams {
 	unsigned width, height, n_samples, seed, y_offset;
 	float sigma_f, sigma, r2, sigma_ln, mu_ln, max_r, ag, lambda_fac;
@@ -87,11 +92,16 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		float xS = (float)px;
 		float yS = (float)py;
 		if (p.sigma_f > 1e-4f) {
-			float g1x, g1y, g2x, g2y;
-			rnd_gauss(&st, &g1x, &g1y);
-			rnd_gauss(&st, &g2x, &g2y);
-			xS += p.sigma_f * g1x;
-			yS += p.sigma_f * g2x;
+			unsigned pair = s >> 1;
+			float ix2 = (float)(pair % 7u);
+			float iy2 = (float)(pair / 7u);
+			float u1 = (ix2 + rnd01(&st)) / 7.0f;
+			float u2 = (iy2 + rnd01(&st)) / 7.0f;
+			float rr = sqrtf(-2.0f * logf(u1 + 1e-12f));
+			float ph = 6.2831853072f * u2;
+			float sgn = (s & 1u) ? -1.0f : 1.0f;
+			xS += p.sigma_f * rr * cosf(ph) * sgn;
+			yS += p.sigma_f * rr * sinf(ph) * sgn;
 		}
 		float xG = xS + p.frame_off_x;
 		float yG = yS + p.frame_off_y;

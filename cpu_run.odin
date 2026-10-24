@@ -81,6 +81,9 @@ Bounce_Params :: struct {
 	film_px:   f32,
 }
 
+// 7x7 stratified antithetic probe grid for the jitter marginalisation
+PROBE_GRID :: 7
+
 Compute_Mode :: enum {
 	Cpu,
 	Cuda,
@@ -186,14 +189,23 @@ render_band :: proc(task: thread.Task) {
 		for px in 0 ..< w {
 			st := wang(u32(py) * 73856093 ~ u32(px) * 19349663 ~ fseed)
 			hit: f32 = 0
-			for _ in 0 ..< int(p.n_samples) {
+			for s in 0 ..< int(p.n_samples) {
 				xS := f32(px)
 				yS := f32(py)
 				if p.sigma_f > 1e-4 {
-					g1 := rnd_gauss(&st)
-					g2 := rnd_gauss(&st)
-					xS += p.sigma_f * g1[0]
-					yS += p.sigma_f * g2[0]
+					pair := s / 2
+					ix2 := f32(pair % PROBE_GRID)
+					iy2 := f32(pair / PROBE_GRID)
+					u1 := (ix2 + rnd01(&st)) / f32(PROBE_GRID)
+					u2 := (iy2 + rnd01(&st)) / f32(PROBE_GRID)
+					rr := math.sqrt(-2.0 * math.ln(u1 + 1e-12))
+					ph := 6.2831853072 * u2
+					sgn: f32 = 1
+					if s % 2 == 1 {
+						sgn = -1
+					}
+					xS += p.sigma_f * rr * math.cos(ph) * sgn
+					yS += p.sigma_f * rr * math.sin(ph) * sgn
 				}
 				xG := xS + p.frame_off_x
 				yG := yS + p.frame_off_y

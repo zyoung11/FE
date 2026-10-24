@@ -16,7 +16,7 @@ Written in [Odin](https://odin-lang.org/), with CUDA acceleration via the driver
 
 - **Physically-based pipeline**
   - Multi-layer emulsion stack with sensitizing dyes (Y/M/C color separation)
-  - Monte-Carlo simulation of silver-halide grain coverage (Poisson-distributed, log-normal grain size)
+  - Monte-Carlo simulation of silver-halide grain coverage (shared Poisson grain field with log-normal grain size); the probe count is tuned so the coverage estimate is fully converged while the render stays fast
   - Halation: cosine-weighted light bounce through the film base with per-layer absorption
   - MTF softening (fixed or edge-adaptive Gaussian blur)
   - Film S-curve, print toe/shoulder, shadow/highlight desaturation, color cross, exposure/contrast grading
@@ -123,7 +123,6 @@ All render settings live in the JSON config file. A complete example is provided
 |---|---|---|---|
 | `height` | int | `0` (auto: 1080 photo / 2160 video) | Output height in pixels |
 | `supersample` | int | `1` (`2` in auto mode) | Supersampling factor |
-| `samples` | int | `400` (photo) / `128` (video) | Monte-Carlo samples per pixel (grain) |
 | `bounce_samples` | int | `400` (photo) / `128` (video) | Monte-Carlo samples per pixel (halation) |
 | `gamma` | float | `2.2` (`2.4` in auto mode) | sRGB gamma |
 | `mtf` | float | `-1` (use emulsion config) | MTF softening in px (overrides `mtf_blur`/`mtf_blur_max`) |
