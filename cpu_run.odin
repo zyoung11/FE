@@ -157,12 +157,11 @@ rnd_gauss :: proc(s: ^u32) -> [2]f32 {
 	return {r * math.cos(2 * math.PI * r2), r * math.sin(2 * math.PI * r2)}
 }
 
-rnd_poisson :: proc(s: ^u32, lam: f32, exp_lam: f32) -> u32 {
+rnd_poisson_lim :: proc(s: ^u32, lam: f32, exp_lam: f32, lim: u32) -> u32 {
 	u := rnd01(s)
 	x: u32 = 0
 	prod := exp_lam
 	summ := exp_lam
-	lim := u32(math.floor(lam + 6.0 * math.sqrt(lam))) + 1
 	for u > summ && x < lim {
 		x += 1
 		prod *= lam / f32(x)
@@ -189,6 +188,15 @@ render_band :: proc(task: thread.Task) {
 		for px in 0 ..< w {
 			st := wang(u32(py) * 73856093 ~ u32(px) * 19349663 ~ fseed)
 			hit: f32 = 0
+			pk_ix: [4]int
+			pk_iy: [4]int
+			pk_lam: [4]f32
+			pk_rs: [4]f32
+			pk_mre: [4]f32
+			pk_exp: [4]f32
+			pk_gr2: [4]f32
+			pk_lim: [4]u32
+			pk_n := 0
 			for s in 0 ..< int(p.n_samples) {
 				xS := f32(px)
 				yS := f32(py)
@@ -212,15 +220,36 @@ render_band :: proc(task: thread.Task) {
 				ix := clamp(int(math.floor(xS)), 0, w - 1)
 				iy := clamp(int(math.floor(yS)), 0, int(p.height) - 1)
 				u := clamp(band.src[iy * w + ix], 0.0, 1.0 - EPS)
-				lam := -p.lambda_fac * math.ln(1.0 - u)
-				decay := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
-				lam *= decay
+				k := -1
+				for q in 0 ..< pk_n {
+					if pk_ix[q] == ix && pk_iy[q] == iy {
+						k = q
+						break
+					}
+				}
+				if k < 0 {
+					k = pk_n
+					pk_n += 1
+					pk_ix[k] = ix
+					pk_iy[k] = iy
+					lam_k := -p.lambda_fac * math.ln(1.0 - u)
+					decay_k := 1.0 - 0.7 * clamp((u - 0.5) / 0.45, 0.0, 1.0)
+					lam_k *= decay_k
+					r_scale_k := 1.0 / math.sqrt(decay_k)
+					pk_lam[k] = lam_k
+					pk_rs[k] = r_scale_k
+					pk_mre[k] = p.max_r * r_scale_k
+					pk_exp[k] = math.exp(-lam_k)
+					pk_gr2[k] = p.r2 * r_scale_k * r_scale_k
+					pk_lim[k] = u32(math.floor(lam_k + 6.0 * math.sqrt(lam_k))) + 1
+				}
+				lam := pk_lam[k]
 				if lam < 1e-5 {
 					continue
 				}
-				r_scale := 1.0 / math.sqrt(decay)
-				max_r_eff := p.max_r * r_scale
-				exp_lam := math.exp(-lam)
+				r_scale := pk_rs[k]
+				max_r_eff := pk_mre[k]
+				exp_lam := pk_exp[k]
 				min_x := int(math.floor((xG - max_r_eff) / p.ag))
 				max_x := int(math.floor((xG + max_r_eff) / p.ag))
 				min_y := int(math.floor((yG - max_r_eff) / p.ag))
@@ -229,13 +258,13 @@ render_band :: proc(task: thread.Task) {
 				for cx := min_x; cx <= max_x && !covered; cx += 1 {
 					for cy := min_y; cy <= max_y && !covered; cy += 1 {
 						cs := wang((((u32(cy) & 0xFFFF) << 16) | (u32(cx) & 0xFFFF)) + fseed)
-						n_grains := rnd_poisson(&cs, lam, exp_lam)
+						n_grains := rnd_poisson_lim(&cs, lam, exp_lam, pk_lim[k])
 						for _ in 0 ..< int(n_grains) {
 							ru := rnd01(&cs)
 							rv := rnd01(&cs)
 							xc := p.ag * (f32(cx) + ru)
 							yc := p.ag * (f32(cy) + rv)
-							gr2 := p.r2 * r_scale * r_scale
+							gr2 := pk_gr2[k]
 							if p.sigma > 0 {
 								rg := rnd_gauss(&cs)
 								rad := min(math.exp(p.mu_ln + p.sigma_ln * rg[0]), p.max_r) * r_scale

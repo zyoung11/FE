@@ -50,12 +50,11 @@ __device__ void rnd_gauss(unsigned* s, float* g1, float* g2) {
 	*g2 = r * sinf(2.0f * 3.14159265358979f * r2);
 }
 
-__device__ unsigned rnd_poisson(unsigned* s, float lam, float exp_lam) {
+__device__ unsigned rnd_poisson_lim(unsigned* s, float lam, float exp_lam, unsigned lim) {
 	float u = rnd01(s);
 	float prod = exp_lam;
 	float summ = exp_lam;
 	unsigned x = 0u;
-	unsigned lim = (unsigned)floorf(lam + 6.0f * sqrtf(lam)) + 1u;
 	while (u > summ && x < lim) {
 		x += 1u;
 		prod *= lam / (float)x;
@@ -87,6 +86,15 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 	float hit = 0.0f;
 	int W = (int)p.width;
 	int H = (int)p.height;
+	int pk_ix[4];
+	int pk_iy[4];
+	float pk_lam[4];
+	float pk_rs[4];
+	float pk_mre[4];
+	float pk_exp[4];
+	float pk_gr2[4];
+	unsigned pk_lim[4];
+	int pk_n = 0;
 
 	for (unsigned s = 0u; s < p.n_samples; s++) {
 		float xS = (float)px;
@@ -115,15 +123,33 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		float u = __ldg(&src[iy * W + ix]);
 		if (u < 0.0f) { u = 0.0f; }
 		if (u > 1.0f - 1e-5f) { u = 1.0f - 1e-5f; }
-		float lam = -p.lambda_fac * logf(1.0f - u);
-		float decay = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
-		lam *= decay;
+		int k = -1;
+		for (int q = 0; q < pk_n; q++) {
+			if (pk_ix[q] == ix && pk_iy[q] == iy) { k = q; break; }
+		}
+		if (k < 0) {
+			k = pk_n;
+			pk_n += 1;
+			pk_ix[k] = ix;
+			pk_iy[k] = iy;
+			float lam_k = -p.lambda_fac * logf(1.0f - u);
+			float decay_k = 1.0f - 0.7f * fminf(1.0f, fmaxf(0.0f, (u - 0.5f) / 0.45f));
+			lam_k *= decay_k;
+			float r_scale_k = 1.0f / sqrtf(decay_k);
+			pk_lam[k] = lam_k;
+			pk_rs[k] = r_scale_k;
+			pk_mre[k] = p.max_r * r_scale_k;
+			pk_exp[k] = expf(-lam_k);
+			pk_gr2[k] = p.r2 * r_scale_k * r_scale_k;
+			pk_lim[k] = (unsigned)floorf(lam_k + 6.0f * sqrtf(lam_k)) + 1u;
+		}
+		float lam = pk_lam[k];
 		if (lam < 1e-5f) {
 			continue;
 		}
-		float r_scale = 1.0f / sqrtf(decay);
-		float max_r_eff = p.max_r * r_scale;
-		float exp_lam = expf(-lam);
+		float r_scale = pk_rs[k];
+		float max_r_eff = pk_mre[k];
+		float exp_lam = pk_exp[k];
 
 		int min_x = (int)floorf((xG - max_r_eff) / p.ag);
 		int max_x = (int)floorf((xG + max_r_eff) / p.ag);
@@ -134,13 +160,13 @@ __global__ void render_kernel(const float* __restrict__ src, float* __restrict__
 		for (int cx = min_x; cx <= max_x && !covered; cx++) {
 			for (int cy = min_y; cy <= max_y && !covered; cy++) {
 				unsigned cs = wang(((((unsigned)cy & 0xFFFFu) << 16) | ((unsigned)cx & 0xFFFFu)) + fseed);
-				unsigned n_grains = rnd_poisson(&cs, lam, exp_lam);
+				unsigned n_grains = rnd_poisson_lim(&cs, lam, exp_lam, pk_lim[k]);
 				for (unsigned z = 0u; z < n_grains; z++) {
 					float ru = rnd01(&cs);
 					float rv = rnd01(&cs);
 					float xc = p.ag * ((float)cx + ru);
 					float yc = p.ag * ((float)cy + rv);
-					float gr2 = p.r2 * r_scale * r_scale;
+					float gr2 = pk_gr2[k];
 					if (p.sigma > 0.0f) {
 						float rgx, rgy;
 						rnd_gauss(&cs, &rgx, &rgy);
