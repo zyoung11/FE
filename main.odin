@@ -9,6 +9,7 @@ import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sys/windows"
+import "core:sync"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
@@ -309,6 +310,38 @@ progress_line :: proc(n: int, total: int, start: time.Time) {
 }
 fail :: proc(msg: string) {fmt.eprintfln("%s[-]%s %s", RED, RESET, msg)}
 
+g_progress: u64
+
+// Disable console quick-edit selection so terminal interaction can never block
+// the process on a console write and stall the render pipeline
+disable_quick_edit :: proc() {
+	h := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	mode: u32
+	if windows.GetConsoleMode(h, &mode) {
+		windows.SetConsoleMode(h, (mode | 0x80) & ~u32(0x40))
+	}
+}
+
+// Abort with a diagnosis when the video pipeline stops making progress for 300 s
+watchdog_main :: proc(t: ^thread.Thread) {
+	last: u64 = 0
+	stale := 0
+	for {
+		time.sleep(30 * time.Second)
+		cur := sync.atomic_load(&g_progress)
+		if cur == last {
+			stale += 1
+			if stale >= 10 {
+				fail("Pipeline stalled for 300s with no progress, aborting")
+				os.exit(1)
+			}
+		} else {
+			last = cur
+			stale = 0
+		}
+	}
+}
+
 stage_time :: proc(label: string, t0: time.Time, verbose := true) -> time.Time {
 	if verbose {
 		info(fmt.tprintf("%s: %.2fs", label, time.duration_seconds(time.since(t0))))
@@ -461,6 +494,7 @@ main :: proc() {
 	when ODIN_OS == .Windows {
 		windows.SetConsoleOutputCP(windows.CODEPAGE(65001))
 		windows.SetConsoleCP(windows.CODEPAGE(65001))
+		disable_quick_edit()
 	}
 	start := time.now()
 	cli: Cli_Options
@@ -997,6 +1031,7 @@ render_worker_main :: proc(t: ^thread.Thread) {
 		if !ok {
 			break
 		}
+		sync.atomic_add(&g_progress, 1)
 		tt := time.now()
 		opts_copy := w.opts^
 		apply_auto_params(&opts_copy, task.auto_p)
@@ -1149,6 +1184,10 @@ run_video :: proc(opts: ^Options, cli: ^Cli_Options) {
 		workers[i] = w
 	}
 
+	watchdog := thread.create(watchdog_main)
+	if watchdog != nil {
+		thread.start(watchdog)
+	}
 	start := time.now()
 	total := vinfo.n_frames
 	next_seq := 0

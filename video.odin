@@ -35,6 +35,26 @@ Video_Out :: struct {
 	thread: ^thread.Thread,
 }
 
+ffmpeg_log_handle: windows.HANDLE
+
+// Shared append-only log for every spawned ffmpeg process so console stalls
+// can never block their output and freeze the pipeline
+ffmpeg_log :: proc() -> windows.HANDLE {
+	if ffmpeg_log_handle == nil {
+		sa: windows.SECURITY_ATTRIBUTES
+		sa.nLength = size_of(windows.SECURITY_ATTRIBUTES)
+		sa.bInheritHandle = true
+		name := utf8_to_wstring_own("fe-ffmpeg.log")
+		defer delete(name)
+		h := windows.CreateFileW(cast(windows.LPCWSTR)raw_data(name), 0x0004, 3, &sa, 4, 0x80, nil)
+		if cast(uintptr)h == uintptr(0xFFFF_FFFF_FFFF_FFFF) {
+			h = windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+		}
+		ffmpeg_log_handle = h
+	}
+	return ffmpeg_log_handle
+}
+
 spawn_ffmpeg :: proc(cmd: string, use_stdout: bool) -> (Ffmpeg_Proc, bool) {
 	read_pipe, write_pipe: windows.HANDLE
 	sa: windows.SECURITY_ATTRIBUTES
@@ -58,9 +78,9 @@ spawn_ffmpeg :: proc(cmd: string, use_stdout: bool) -> (Ffmpeg_Proc, bool) {
 		si.hStdInput = windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 	} else {
 		si.hStdInput = read_pipe
-		si.hStdOutput = windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+		si.hStdOutput = ffmpeg_log()
 	}
-	si.hStdError = windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+	si.hStdError = ffmpeg_log()
 	pi: windows.PROCESS_INFORMATION
 	if !windows.CreateProcessW(nil, cast(windows.LPCWSTR)raw_data(cmd_w), nil, nil, true, 0, nil, nil, &si, &pi) {
 		windows.CloseHandle(read_pipe)
@@ -252,6 +272,7 @@ video_decode_thread :: proc(t: ^thread.Thread) {
 		if !chan.send(v.done, true) {
 			break
 		}
+		sync.atomic_add(&g_progress, 1)
 	}
 }
 
@@ -329,7 +350,11 @@ video_encode_thread :: proc(t: ^thread.Thread) {
 		if !ok {
 			break
 		}
-		video_write_frame(&v.ffmpeg, buf)
+		if !video_write_frame(&v.ffmpeg, buf) {
+			fail("Encoder pipe write failed, see fe-ffmpeg.log")
+			os.exit(1)
+		}
+		sync.atomic_add(&g_progress, 1)
 		delete(buf)
 	}
 }
